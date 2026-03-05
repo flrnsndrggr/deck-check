@@ -207,6 +207,11 @@ Important runtime env vars:
 - `DATABASE_URL`
 - `REDIS_URL`
 
+Production smoke test (after deploy):
+```bash
+API_BASE=https://your-api-domain ./scripts/smoke-prod.sh
+```
+
 ## Known limitations
 - Not a full multiplayer stack/interactions engine; this is a heuristic, consistent goldfish simulator.
 - Game Changers parsing from announcement/formats pages is best-effort and may include false positives without curated normalization.
