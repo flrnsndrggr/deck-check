@@ -1,0 +1,72 @@
+services:
+  - type: web
+    name: deck-check-api
+    env: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/ready
+    startCommand: sh /app/scripts/migrate.sh && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CARD_CACHE_BACKEND
+        value: postgres
+      - key: SCRYFALL_BULK_PATH
+        value: /tmp/scryfall-oracle-cards.json
+      - key: RULES_CACHE_DIR
+        value: /tmp/rules
+      - key: APP_BASE_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: TRUSTED_HOSTS
+        sync: false
+      - key: FORCE_HTTPS
+        value: "1"
+
+  - type: worker
+    name: deck-check-worker
+    env: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    startCommand: python -m app.workers.rq_worker
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CARD_CACHE_BACKEND
+        value: postgres
+      - key: SCRYFALL_BULK_PATH
+        value: /tmp/scryfall-oracle-cards.json
+      - key: RULES_CACHE_DIR
+        value: /tmp/rules
+
+  - type: cron
+    name: deck-check-scheduler
+    env: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    schedule: "0 3 * * *"
+    startCommand: python /app/scripts/update_data.py --all
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CARD_CACHE_BACKEND
+        value: postgres
+      - key: SCRYFALL_BULK_PATH
+        value: /tmp/scryfall-oracle-cards.json
+      - key: RULES_CACHE_DIR
+        value: /tmp/rules

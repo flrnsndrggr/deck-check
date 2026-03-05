@@ -24,5 +24,6 @@ This repo keeps docs grouped by intent so operational references, research notes
 - Plans
   - [EXECUTION_TASKLIST.md](plans/EXECUTION_TASKLIST.md)
   - [PUBLIC_LAUNCH_CHECKLIST.md](plans/PUBLIC_LAUNCH_CHECKLIST.md)
+  - [NETLIFY_RENDER_NEON_UPSTASH_ROLLOUT.md](plans/NETLIFY_RENDER_NEON_UPSTASH_ROLLOUT.md)
 - Product
   - [DESIGN_REVIEW_AND_IMPROVEMENT_BRIEF.md](product/DESIGN_REVIEW_AND_IMPROVEMENT_BRIEF.md)

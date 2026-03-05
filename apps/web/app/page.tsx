@@ -340,6 +340,7 @@ export default function HomePage() {
   const [strictlyBetter, setStrictlyBetter] = useState<any[]>([]);
   const [strictlyBetterLoading, setStrictlyBetterLoading] = useState(false);
   const [expandedRoles, setExpandedRoles] = useState<Record<string, boolean>>({});
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
   const detailOpen = true;
 
@@ -489,6 +490,22 @@ export default function HomePage() {
 
   function toggleRole(role: string) {
     setExpandedRoles((prev) => ({ ...prev, [role]: !prev[role] }));
+  }
+
+  function chartMotion(seriesIndex = 0) {
+    if (prefersReducedMotion) {
+      return {
+        isAnimationActive: false as const,
+        animationDuration: 0,
+        animationBegin: 0,
+      };
+    }
+    return {
+      isAnimationActive: true as const,
+      animationDuration: 720,
+      animationBegin: Math.min(seriesIndex * 90, 600),
+      animationEasing: "ease-out" as const,
+    };
   }
 
   function renderMetricHelp(metricKey: string) {
@@ -720,6 +737,19 @@ export default function HomePage() {
     void hydrateDisplay([selectedCard]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCard]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setPrefersReducedMotion(media.matches);
+    sync();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", sync);
+      return () => media.removeEventListener("change", sync);
+    }
+    media.addListener(sync);
+    return () => media.removeListener(sync);
+  }, []);
 
   useEffect(() => {
     setExpandedRoles({});
@@ -1253,9 +1283,9 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Mana sources", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="p50" stroke="#111" strokeWidth={2} />
-                    <Line type="monotone" dataKey="p75" stroke="#555" strokeWidth={2} />
-                    <Line type="monotone" dataKey="p90" stroke="#999" strokeWidth={2} />
+                    <Line {...chartMotion(0)} type="monotone" dataKey="p50" stroke="#111" strokeWidth={2} />
+                    <Line {...chartMotion(1)} type="monotone" dataKey="p75" stroke="#555" strokeWidth={2} />
+                    <Line {...chartMotion(2)} type="monotone" dataKey="p90" stroke="#999" strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1269,7 +1299,7 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "Probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line type="monotone" dataKey="p_hit_on_curve" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion(0)} type="monotone" dataKey="p_hit_on_curve" stroke="#111" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1292,8 +1322,8 @@ export default function HomePage() {
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} label={{ value: "P(full identity)", angle: 90, position: "insideRight" }} />
                       <Tooltip formatter={(v: any, k: any) => (String(k).includes("p_") ? `${(Number(v) * 100).toFixed(1)}%` : Number(v).toFixed(2))} />
                       <Legend />
-                      <Line yAxisId="left" type="monotone" dataKey="avg_colors" stroke="#333" strokeWidth={2.4} name="Avg colors online" />
-                      <Line yAxisId="right" type="monotone" dataKey="p_full_identity" stroke="#7a7a7a" strokeWidth={2} name="P(full identity online)" />
+                      <Line {...chartMotion(0)} yAxisId="left" type="monotone" dataKey="avg_colors" stroke="#333" strokeWidth={2.4} name="Avg colors online" />
+                      <Line {...chartMotion(1)} yAxisId="right" type="monotone" dataKey="p_full_identity" stroke="#7a7a7a" strokeWidth={2} name="P(full identity online)" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -1310,9 +1340,9 @@ export default function HomePage() {
                     <YAxis domain={[0, 1]} label={{ value: "Share of games", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
                     <Legend />
-                    <Area type="monotone" dataKey="setup" stackId="1" stroke="#bbb" fill="#d8d8d8" />
-                    <Area type="monotone" dataKey="engine" stackId="1" stroke="#888" fill="#b7b7b7" />
-                    <Area type="monotone" dataKey="win_attempt" stackId="1" stroke="#333" fill="#6e6e6e" />
+                    <Area {...chartMotion(0)} type="monotone" dataKey="setup" stackId="1" stroke="#bbb" fill="#d8d8d8" />
+                    <Area {...chartMotion(1)} type="monotone" dataKey="engine" stackId="1" stroke="#888" fill="#b7b7b7" />
+                    <Area {...chartMotion(2)} type="monotone" dataKey="win_attempt" stackId="1" stroke="#333" fill="#6e6e6e" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -1326,7 +1356,7 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "Cumulative probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line type="monotone" dataKey="cdf" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion(0)} type="monotone" dataKey="cdf" stroke="#111" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1341,7 +1371,7 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "No-action probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line type="monotone" dataKey="p_no_action" stroke="#8a1e1e" strokeWidth={2.5} />
+                    <Line {...chartMotion(0)} type="monotone" dataKey="p_no_action" stroke="#8a1e1e" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1355,7 +1385,7 @@ export default function HomePage() {
                     <XAxis dataKey="card" hide />
                     <YAxis label={{ value: "Stranded rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar dataKey="rate" fill="#444" />
+                    <Bar {...chartMotion(0)} dataKey="rate" fill="#444" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1370,7 +1400,7 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Cast turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar dataKey="rate" fill="#111" />
+                    <Bar {...chartMotion(0)} dataKey="rate" fill="#111" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1383,7 +1413,7 @@ export default function HomePage() {
                     <XAxis dataKey="mulligans" label={{ value: "Mulligans taken", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar dataKey="rate" fill="#666" />
+                    <Bar {...chartMotion(0)} dataKey="rate" fill="#666" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1405,7 +1435,7 @@ export default function HomePage() {
                     <XAxis dataKey="metric" label={{ value: "Metric", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Score", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Bar dataKey="value" fill="#2f2f2f" />
+                    <Bar {...chartMotion(0)} dataKey="value" fill="#2f2f2f" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1666,9 +1696,9 @@ export default function HomePage() {
                     <YAxis label={{ value: "Pip demand", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(2)} />
                     <Legend />
-                    <Bar dataKey="early" stackId="pips" fill="#9a9a9a" name="Early (MV<=2)" />
-                    <Bar dataKey="mid" stackId="pips" fill="#707070" name="Mid (MV3-4)" />
-                    <Bar dataKey="late" stackId="pips" fill="#3a3a3a" name="Late (MV5+)" />
+                    <Bar {...chartMotion(0)} dataKey="early" stackId="pips" fill="#9a9a9a" name="Early (MV<=2)" />
+                    <Bar {...chartMotion(1)} dataKey="mid" stackId="pips" fill="#707070" name="Mid (MV3-4)" />
+                    <Bar {...chartMotion(2)} dataKey="late" stackId="pips" fill="#3a3a3a" name="Late (MV5+)" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1684,8 +1714,8 @@ export default function HomePage() {
                     <YAxis label={{ value: "Source count", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(2)} />
                     <Legend />
-                    <Bar dataKey="land_sources" stackId="src" fill="#4b4b4b" name="Land sources" />
-                    <Bar dataKey="nonland_sources" stackId="src" fill="#9b9b9b" name="Nonland sources" />
+                    <Bar {...chartMotion(0)} dataKey="land_sources" stackId="src" fill="#4b4b4b" name="Land sources" />
+                    <Bar {...chartMotion(1)} dataKey="nonland_sources" stackId="src" fill="#9b9b9b" name="Nonland sources" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1701,8 +1731,8 @@ export default function HomePage() {
                     <YAxis label={{ value: "Share", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
                     <Legend />
-                    <Bar dataKey="demand_share" fill="#2d2d2d" name="Demand share" />
-                    <Bar dataKey="source_share" fill="#8a8a8a" name="Source share" />
+                    <Bar {...chartMotion(0)} dataKey="demand_share" fill="#2d2d2d" name="Demand share" />
+                    <Bar {...chartMotion(1)} dataKey="source_share" fill="#8a8a8a" name="Source share" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1746,7 +1776,7 @@ export default function HomePage() {
                       name="Spells"
                       onClick={(d: any) => setSelectedCurveMv(Number(d?.mana_value ?? 0))}
                     />
-                    <Line yAxisId="right" type="monotone" dataKey="p_on_curve_est" stroke="#111" strokeWidth={2} dot={{ r: 2 }} name="Estimated P(on curve)" />
+                    <Line {...chartMotion(0)} yAxisId="right" type="monotone" dataKey="p_on_curve_est" stroke="#111" strokeWidth={2} dot={{ r: 2 }} name="Estimated P(on curve)" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1888,8 +1918,8 @@ export default function HomePage() {
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Plan progress score", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="median" stroke="#111" strokeWidth={2.5} />
-                    <Line type="monotone" dataKey="p90" stroke="#8a8a8a" strokeWidth={2} />
+                    <Line {...chartMotion(0)} type="monotone" dataKey="median" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion(1)} type="monotone" dataKey="p90" stroke="#8a8a8a" strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1904,7 +1934,7 @@ export default function HomePage() {
                     <XAxis dataKey="name" label={{ value: "Failure type", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Percent of runs", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${Number(v).toFixed(1)}%`} />
-                    <Bar dataKey="value" fill="#444" />
+                    <Bar {...chartMotion(0)} dataKey="value" fill="#444" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1919,7 +1949,7 @@ export default function HomePage() {
                     <XAxis dataKey="name" label={{ value: "Win route", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Percent of runs", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${Number(v).toFixed(1)}%`} />
-                    <Bar dataKey="value" fill="#111" />
+                    <Bar {...chartMotion(0)} dataKey="value" fill="#111" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2082,7 +2112,7 @@ export default function HomePage() {
                     <XAxis dataKey="card" hide />
                     <YAxis label={{ value: "Importance score", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(3)} />
-                    <Bar dataKey="score" fill="#222" />
+                    <Bar {...chartMotion(0)} dataKey="score" fill="#222" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

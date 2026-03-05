@@ -153,6 +153,7 @@ See [docs/research/AUTOPILOT_API_RESEARCH.md](docs/research/AUTOPILOT_API_RESEAR
 ## Documentation map
 See [docs/README.md](docs/README.md) for the organized doc structure (reference, research, plans, product).
 Public website hardening and legal launch items: [docs/plans/PUBLIC_LAUNCH_CHECKLIST.md](docs/plans/PUBLIC_LAUNCH_CHECKLIST.md)
+Managed hosting rollout (GitHub + Netlify + Render + Neon + Upstash): [docs/plans/NETLIFY_RENDER_NEON_UPSTASH_ROLLOUT.md](docs/plans/NETLIFY_RENDER_NEON_UPSTASH_ROLLOUT.md)
 
 ## Data update pipeline
 Scheduled (daily via `scheduler` service) and on-demand update jobs:
@@ -170,7 +171,8 @@ Each source persists:
 
 Delivery stack:
 - Terraform (`infra/`)
-- GitHub Actions workflows (`.github/workflows/pr.yml`, `.github/workflows/deploy.yml`)
+- GitHub Actions CI workflow (`.github/workflows/ci.yml`)
+- Managed hosting blueprint files (`render.yaml`, `netlify.toml`)
 
 AWS target architecture:
 - CloudFront + WAF -> ALB -> ECS services (`web`, `api`, `worker`)
