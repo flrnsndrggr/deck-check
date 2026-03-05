@@ -19,18 +19,30 @@ import {
 import ReactMarkdown from "react-markdown";
 
 const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const API_BASE = RAW_API_BASE.trim().replace(/^['"]|['"]$/g, "").replace(/\/+$/g, "");
+const DEFAULT_API_BASE = "https://deck-check.onrender.com";
+
+function sanitizeApiBase(raw: string): string {
+  const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
+  const match = trimmed.match(/https?:\/\/[^\s'"]+/i);
+  return (match ? match[0] : trimmed).replace(/\/+$/g, "");
+}
+
+const API_BASE = sanitizeApiBase(RAW_API_BASE);
 
 function apiUrl(path: string): string {
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  if (!API_BASE) return normalized;
-  try {
-    return new URL(normalized, API_BASE).toString();
-  } catch {
-    throw new Error(
-      `Invalid NEXT_PUBLIC_API_BASE value "${RAW_API_BASE}". Please set a valid https://... URL.`,
-    );
+  const base =
+    API_BASE ||
+    (typeof window !== "undefined" && window.location.hostname.endsWith("netlify.app")
+      ? DEFAULT_API_BASE
+      : "");
+  if (!base) {
+    return normalized;
   }
+  if (!/^https?:\/\/[^\s]+$/i.test(base)) {
+    throw new Error(`Invalid NEXT_PUBLIC_API_BASE value "${RAW_API_BASE}".`);
+  }
+  return `${base}${normalized}`;
 }
 type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 
@@ -495,6 +507,47 @@ export default function HomePage() {
     return typeof v === "number" ? v : 0;
   }
 
+  function extractApiErrorMessage(payload: any, fallback: string): string {
+    if (!payload) return fallback;
+    const detail = payload.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail && typeof detail === "object") {
+      const core = typeof detail.message === "string" ? detail.message : fallback;
+      const guidance = typeof detail.guidance === "string" ? ` ${detail.guidance}` : "";
+      return `${core}${guidance}`.trim();
+    }
+    if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+    return fallback;
+  }
+
+  async function requestJson(path: string, init: RequestInit, stage: string): Promise<any> {
+    let response: Response;
+    try {
+      response = await fetch(apiUrl(path), init);
+    } catch (err: any) {
+      throw new Error(`${stage}: ${err?.message || "Network request failed."}`);
+    }
+
+    const raw = await response.text();
+    let payload: any = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        if (!response.ok) {
+          throw new Error(`${stage} failed (${response.status}).`);
+        }
+        throw new Error(`${stage} returned invalid JSON.`);
+      }
+    }
+
+    if (!response.ok) {
+      const fallback = `${stage} failed (${response.status}).`;
+      throw new Error(extractApiErrorMessage(payload, fallback));
+    }
+    return payload;
+  }
+
   function cardDisplay(name: string) {
     return displayMap[name] || {};
   }
@@ -610,30 +663,15 @@ export default function HomePage() {
     try {
       updateStatus("importing");
       setUrlImportNotice(null);
-      const imported = await fetch(apiUrl("/api/decks/import-url"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: moxfieldUrl.trim() }),
-      });
-      if (!imported.ok) {
-        let message = "URL import failed. Paste text export instead.";
-        try {
-          const payload = await imported.json();
-          const detail = payload?.detail;
-          if (typeof detail === "string") {
-            message = detail;
-          } else if (detail && typeof detail === "object") {
-            const core = detail.message || "URL import failed.";
-            const guidance = detail.guidance ? ` ${detail.guidance}` : "";
-            message = `${core}${guidance}`;
-          }
-        } catch {
-          const detailText = await imported.text();
-          if (detailText) message = detailText;
-        }
-        throw new Error(message);
-      }
-      const payload = await imported.json();
+      const payload = await requestJson(
+        "/api/decks/import-url",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: moxfieldUrl.trim() }),
+        },
+        "Deck URL import",
+      );
       setDecklist(payload.decklist_text);
       setMoxfieldUrl("");
       if (payload.warnings?.length) {
@@ -657,19 +695,27 @@ export default function HomePage() {
   async function runPipeline() {
     try {
       updateStatus("parsing");
-      const parsed = await fetch(apiUrl("/api/decks/parse"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
-      }).then((r) => r.json());
+      const parsed = await requestJson(
+        "/api/decks/parse",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
+        },
+        "Deck parse",
+      );
       setParseRes(parsed);
 
       updateStatus("tagging");
-      const tagged = await fetch(apiUrl("/api/decks/tag"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, global_tags: true }),
-      }).then((r) => r.json());
+      const tagged = await requestJson(
+        "/api/decks/tag",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, global_tags: true }),
+        },
+        "Deck tagging",
+      );
       setTagRes(tagged);
       setDisplayMap(tagged.card_display || {});
       const inferredWincons = inferWinconsFromTagged(tagged);
@@ -677,30 +723,42 @@ export default function HomePage() {
 
       updateStatus("sim-queued");
       const effectivePolicy = computeEffectivePolicy();
-      const simJob = await fetch(apiUrl("/api/sim/run"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cards: tagged.cards,
-          commander: parsed.commander,
-          runs: simRuns,
-          turn_limit: turnLimit,
-          policy: effectivePolicy,
-          bracket,
-          multiplayer: true,
-          threat_model: tablePressure >= 40,
-          primary_wincons: inferredWincons,
-          sim_backend: "vectorized",
-          batch_size: 512,
-          seed: 42,
-        }),
-      }).then((r) => r.json());
+      const simJob = await requestJson(
+        "/api/sim/run",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cards: tagged.cards,
+            commander: parsed.commander,
+            runs: simRuns,
+            turn_limit: turnLimit,
+            policy: effectivePolicy,
+            bracket,
+            multiplayer: true,
+            threat_model: tablePressure >= 40,
+            primary_wincons: inferredWincons,
+            sim_backend: "vectorized",
+            batch_size: 512,
+            seed: 42,
+          }),
+        },
+        "Simulation enqueue",
+      );
 
       let simStatus = "queued";
       let simPayload: any = null;
+      const pollStartedAt = Date.now();
       while (!["done", "failed"].includes(simStatus)) {
+        if (Date.now() - pollStartedAt > 3 * 60 * 1000) {
+          throw new Error("Simulation polling timed out after 3 minutes. Worker may be offline.");
+        }
         await new Promise((r) => setTimeout(r, 1000));
-        const polled = await fetch(apiUrl(`/api/sim/${simJob.job_id}`)).then((r) => r.json());
+        const polled = await requestJson(
+          `/api/sim/${simJob.job_id}`,
+          { method: "GET" },
+          "Simulation status poll",
+        );
         simStatus = polled.status;
         simPayload = polled.result;
         updateStatus(`sim-${simStatus}`);
@@ -712,26 +770,34 @@ export default function HomePage() {
       setSimRes(simPayload);
 
       updateStatus("analyzing");
-      const ana = await fetch(apiUrl("/api/analyze"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cards: tagged.cards,
-          commander: parsed.commander,
-          bracket,
-          template: "balanced",
-          budget_max_usd: budgetMaxUsd === "" ? null : Number(budgetMaxUsd),
-          sim_summary: simPayload.summary,
-        }),
-      }).then((r) => r.json());
+      const ana = await requestJson(
+        "/api/analyze",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cards: tagged.cards,
+            commander: parsed.commander,
+            bracket,
+            template: "balanced",
+            budget_max_usd: budgetMaxUsd === "" ? null : Number(budgetMaxUsd),
+            sim_summary: simPayload.summary,
+          }),
+        },
+        "Deck analysis",
+      );
       setAnalysis(ana);
 
       updateStatus("guides");
-      const gd = await fetch(apiUrl("/api/guides/generate"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analyze: ana, sim_summary: simPayload.summary }),
-      }).then((r) => r.json());
+      const gd = await requestJson(
+        "/api/guides/generate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ analyze: ana, sim_summary: simPayload.summary }),
+        },
+        "Guide generation",
+      );
       setGuides(gd);
       const bracketCriteriaCards = (ana?.bracket_report?.criteria || [])
         .flatMap((c: any) => (c?.cards || []).map((x: any) => x?.name))
