@@ -28,6 +28,7 @@ def _sim_request_payload():
 
 
 def test_sim_run_uses_inline_fallback_when_no_worker(monkeypatch):
+    monkeypatch.setattr(routes, "get_cached_simulation", lambda payload: None)
     monkeypatch.setattr(routes, "_has_live_workers", lambda: False)
     monkeypatch.setattr(routes.settings, "sim_inline_fallback_no_worker", True)
 
@@ -62,6 +63,7 @@ def test_sim_run_uses_inline_fallback_when_no_worker(monkeypatch):
 
 
 def test_sim_run_enqueues_when_worker_live(monkeypatch):
+    monkeypatch.setattr(routes, "get_cached_simulation", lambda payload: None)
     monkeypatch.setattr(routes, "_has_live_workers", lambda: True)
     monkeypatch.setattr(routes.settings, "sim_inline_fallback_no_worker", True)
 
@@ -83,4 +85,3 @@ def test_sim_run_enqueues_when_worker_live(monkeypatch):
     assert poll.status_code == 200
     assert poll.json()["status"] == "queued"
     assert enqueued["count"] == 1
-
