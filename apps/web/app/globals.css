@@ -258,6 +258,26 @@ body {
   gap: 8px;
 }
 
+.card-preview-scroll {
+  margin-top: 6px;
+  max-height: 56vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.card-preview-scroll .table {
+  margin-top: 0 !important;
+}
+
+.card-preview-scroll .table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+}
+
 .input, .textarea, .select {
   width: 100%;
   border: 1px solid #d8d8d8;
