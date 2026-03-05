@@ -5,7 +5,7 @@ from app.main import app
 from app.db.session import SessionLocal
 from app.db.base import Base
 from app.db.session import engine
-import app.models  # noqa: F401
+import app.models as models_registry  # noqa: F401
 from app.models.sim_job import SimJob
 import app.api.routes as routes
 
