@@ -428,6 +428,42 @@ export default function HomePage() {
   const colorIdentitySize = Number(colorProfile?.color_identity_size ?? parseRes?.color_identity_size ?? tagRes?.color_identity_size ?? 0);
   const selectedImportance = (analysis?.importance || []).find((x: any) => x.card === selectedCard);
   const selectedImpact = selectedCard ? (simRes?.summary?.card_impacts || {})[selectedCard] : null;
+  const selectedDisplay = selectedCard ? cardDisplay(selectedCard) : {};
+  const insightMetrics = [
+    {
+      key: "importance",
+      label: "Importance score",
+      title: "Composite impact score from seen impact, cast impact, graph centrality, and redundancy.",
+      value: typeof selectedImportance?.score === "number" ? Number(selectedImportance.score) : null,
+    },
+    {
+      key: "seen",
+      label: "Seen impact",
+      title: "How much this card correlates with better outcomes when seen by relevant turns.",
+      value: selectedImpact && typeof selectedImpact.seen_lift === "number" ? Number(selectedImpact.seen_lift) : null,
+    },
+    {
+      key: "cast",
+      label: "Cast impact",
+      title: "How much this card correlates with better outcomes when actually cast.",
+      value: selectedImpact && typeof selectedImpact.cast_lift === "number" ? Number(selectedImpact.cast_lift) : null,
+    },
+    {
+      key: "centrality",
+      label: "Centrality",
+      title: "How central the card is within simulated successful lines and card network influence.",
+      value: selectedImpact && typeof selectedImpact.centrality === "number" ? Number(selectedImpact.centrality) : null,
+    },
+    {
+      key: "redundancy",
+      label: "Redundancy",
+      title: "How replaceable this card is by similar role cards. Lower means harder to replace.",
+      value: selectedImpact && typeof selectedImpact.redundancy === "number" ? Number(selectedImpact.redundancy) : null,
+    },
+  ];
+  const hasInsightMetrics = insightMetrics.some((m) => m.value !== null);
+  const selectedScryfallUrl = String(selectedDisplay?.scryfall_uri || "");
+  const selectedCardmarketUrl = String(selectedDisplay?.cardmarket_url || "");
   const findings = useMemo(() => {
     const out: string[] = [];
     if (num(simRes?.summary?.milestones?.p_mana4_t3) < 0.5) out.push("Early mana development is below target; add low-cost ramp/fixing.");
@@ -2414,13 +2450,15 @@ export default function HomePage() {
           <aside className={`card-insight ${selectedCard ? "open" : ""}`}>
             {selectedCard ? (
               <div className="stack">
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <h3 style={{ margin: 0 }}>{selectedCard}</h3>
-                  <button className="btn" onClick={() => setSelectedCard(null)}>x</button>
+                <div className="insight-header">
+                  <h3 className="insight-title">{selectedCard}</h3>
+                  <button className="insight-close" aria-label="Close card insight" onClick={() => setSelectedCard(null)}>
+                    x
+                  </button>
                 </div>
-                {cardDisplay(selectedCard)?.normal ? (
+                {selectedDisplay?.normal ? (
                   <img
-                    src={cardDisplay(selectedCard)?.normal}
+                    src={selectedDisplay?.normal}
                     alt={selectedCard}
                     width={290}
                     height={405}
@@ -2431,36 +2469,34 @@ export default function HomePage() {
                   <div style={{ width: "100%", aspectRatio: "146 / 204", borderRadius: 8, background: "#efefef", border: "1px solid #ddd" }} />
                 )}
 
-                <div className="stack">
-                  <div className="insight-metric">
-                    <span>Importance score</span>
-                    <span className="tip" title="Composite impact score from seen impact, cast impact, graph centrality, and redundancy.">?</span>
-                    <strong>{selectedImportance ? Number(selectedImportance.score || 0).toFixed(3) : "n/a"}</strong>
+                {hasInsightMetrics ? (
+                  <div className="stack">
+                    {insightMetrics.map((metric) => (
+                      <div key={metric.key} className="insight-metric">
+                        <span>{metric.label}</span>
+                        <span className="tip" title={metric.title}>?</span>
+                        <strong>{metric.value == null ? "n/a" : metric.value.toFixed(3)}</strong>
+                      </div>
+                    ))}
                   </div>
-                  <div className="insight-metric">
-                    <span>Seen impact</span>
-                    <span className="tip" title="How much this card correlates with better outcomes when seen by relevant turns.">?</span>
-                    <strong>{selectedImpact ? Number(selectedImpact.seen_lift || 0).toFixed(3) : "n/a"}</strong>
+                ) : (
+                  <div className="insight-no-metrics">
+                    Card-level simulation metrics are not available for this card in the current run. This usually means it was not part of the sampled impact set.
                   </div>
-                  <div className="insight-metric">
-                    <span>Cast impact</span>
-                    <span className="tip" title="How much this card correlates with better outcomes when actually cast.">?</span>
-                    <strong>{selectedImpact ? Number(selectedImpact.cast_lift || 0).toFixed(3) : "n/a"}</strong>
-                  </div>
-                  <div className="insight-metric">
-                    <span>Centrality</span>
-                    <span className="tip" title="How central the card is within simulated successful lines and card network influence.">?</span>
-                    <strong>{selectedImpact ? Number(selectedImpact.centrality || 0).toFixed(3) : "n/a"}</strong>
-                  </div>
-                  <div className="insight-metric">
-                    <span>Redundancy</span>
-                    <span className="tip" title="How replaceable this card is by similar role cards. Lower means harder to replace.">?</span>
-                    <strong>{selectedImpact ? Number(selectedImpact.redundancy || 0).toFixed(3) : "n/a"}</strong>
-                  </div>
-                </div>
+                )}
 
-                <a className="btn" href={cardDisplay(selectedCard)?.scryfall_uri || "#"} target="_blank" rel="noreferrer">Open on Scryfall</a>
-                <a className="insight-link" href={cardDisplay(selectedCard)?.cardmarket_url || "#"} target="_blank" rel="noreferrer">Open on Cardmarket</a>
+                <div className="insight-actions">
+                  {selectedScryfallUrl ? (
+                    <a className="btn insight-btn" href={selectedScryfallUrl} target="_blank" rel="noreferrer">Open on Scryfall</a>
+                  ) : (
+                    <span className="btn insight-btn disabled">Scryfall unavailable</span>
+                  )}
+                  {selectedCardmarketUrl ? (
+                    <a className="btn insight-btn" href={selectedCardmarketUrl} target="_blank" rel="noreferrer">Open on Cardmarket</a>
+                  ) : (
+                    <span className="btn insight-btn disabled">Cardmarket unavailable</span>
+                  )}
+                </div>
 
                 <hr className="insight-sep" />
 
