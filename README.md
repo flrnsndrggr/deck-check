@@ -129,11 +129,14 @@ The outcomes panel includes multi-lens charts with plain-English interpretation:
 - mulligan and commander timing lens
 - dead-card concentration lens
 
-Detailed lens definitions: [docs/ANALYSIS_LENSES.md](docs/ANALYSIS_LENSES.md)
-Complex-systems adaptation notes: [docs/COMPLEX_SYSTEMS_ADAPTATION.md](docs/COMPLEX_SYSTEMS_ADAPTATION.md)
+Detailed lens definitions: [docs/research/ANALYSIS_LENSES.md](docs/research/ANALYSIS_LENSES.md)
+Complex-systems adaptation notes: [docs/research/COMPLEX_SYSTEMS_ADAPTATION.md](docs/research/COMPLEX_SYSTEMS_ADAPTATION.md)
 
 ## API research notes
-See [docs/AUTOPILOT_API_RESEARCH.md](docs/AUTOPILOT_API_RESEARCH.md) for integrated and candidate data sources.
+See [docs/research/AUTOPILOT_API_RESEARCH.md](docs/research/AUTOPILOT_API_RESEARCH.md) for integrated and candidate data sources.
+
+## Documentation map
+See [docs/README.md](docs/README.md) for the organized doc structure (reference, research, plans, product).
 
 ## Data update pipeline
 Scheduled (daily via `scheduler` service) and on-demand update jobs:
