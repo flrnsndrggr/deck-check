@@ -3,8 +3,15 @@ from sqlalchemy import select
 
 from app.main import app
 from app.db.session import SessionLocal
+from app.db.base import Base
+from app.db.session import engine
+import app.models  # noqa: F401
 from app.models.sim_job import SimJob
 import app.api.routes as routes
+
+
+def _ensure_tables():
+    Base.metadata.create_all(bind=engine)
 
 
 def _sim_request_payload():
@@ -28,6 +35,7 @@ def _sim_request_payload():
 
 
 def test_sim_run_uses_inline_fallback_when_no_worker(monkeypatch):
+    _ensure_tables()
     monkeypatch.setattr(routes, "get_cached_simulation", lambda payload: None)
     monkeypatch.setattr(routes, "_has_live_workers", lambda: False)
     monkeypatch.setattr(routes.settings, "sim_inline_fallback_no_worker", True)
@@ -63,6 +71,7 @@ def test_sim_run_uses_inline_fallback_when_no_worker(monkeypatch):
 
 
 def test_sim_run_enqueues_when_worker_live(monkeypatch):
+    _ensure_tables()
     monkeypatch.setattr(routes, "get_cached_simulation", lambda payload: None)
     monkeypatch.setattr(routes, "_has_live_workers", lambda: True)
     monkeypatch.setattr(routes.settings, "sim_inline_fallback_no_worker", True)
