@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +14,31 @@ MOXFIELD_API_CANDIDATES = [
 ]
 
 ARCHIDEKT_API_CANDIDATE = "https://archidekt.com/api/decks/{deck_id}/"
+BLOCK_STATUSES = {401, 403, 429}
+ImportErrorClass = Literal["bot_blocked", "unsupported_host", "parse_failed"]
+
+
+class UrlImportError(ValueError):
+    def __init__(
+        self,
+        error_class: ImportErrorClass,
+        message: str,
+        guidance: str | None = None,
+        warnings: List[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_class = error_class
+        self.message = message
+        self.guidance = guidance or "Paste text export and continue."
+        self.warnings = warnings or []
+
+    def to_detail(self) -> Dict[str, Any]:
+        return {
+            "error_class": self.error_class,
+            "message": self.message,
+            "guidance": self.guidance,
+            "warnings": self.warnings,
+        }
 
 
 def extract_moxfield_deck_id(url: str) -> str | None:
@@ -212,7 +237,11 @@ def import_decklist_from_url(url: str) -> Tuple[str, str, List[str]]:
     deck_id = extract_moxfield_deck_id(url)
     archidekt_id = extract_archidekt_deck_id(url)
     if deck_id is None and archidekt_id is None:
-        raise ValueError("Supported URL import hosts: Moxfield, Archidekt. Paste text export as fallback.")
+        raise UrlImportError(
+            "unsupported_host",
+            "Supported URL import hosts: Moxfield and Archidekt.",
+            guidance="Paste a deck text export in the decklist box if your URL host is unsupported.",
+        )
 
     warnings: List[str] = []
     headers = {"User-Agent": "Deck.Check/0.1 (+https://localhost)"}
@@ -227,13 +256,20 @@ def import_decklist_from_url(url: str) -> Tuple[str, str, List[str]]:
                 decklist = decklist_from_archidekt_payload(payload)
                 return decklist, endpoint, warnings
             except Exception as exc:
-                raise ValueError(f"Archidekt URL import failed: {exc}. Paste text export as fallback.")
+                raise UrlImportError(
+                    "parse_failed",
+                    f"Archidekt URL import failed: {exc}",
+                    guidance="Paste text export from Archidekt as fallback.",
+                )
 
+        blocked_detected = False
         for api_url in MOXFIELD_API_CANDIDATES:
             endpoint = api_url.format(deck_id=deck_id)
             try:
                 resp = client.get(endpoint)
                 if resp.status_code >= 400:
+                    if resp.status_code in BLOCK_STATUSES:
+                        blocked_detected = True
                     warnings.append(f"Moxfield API endpoint failed: {endpoint} ({resp.status_code})")
                     continue
                 payload = resp.json()
@@ -245,11 +281,35 @@ def import_decklist_from_url(url: str) -> Tuple[str, str, List[str]]:
         # Fallback: HTML -> embedded JSON extraction
         html_resp = client.get(url)
         if html_resp.status_code >= 400:
-            raise ValueError("Moxfield URL could not be fetched. Paste text export as fallback.")
+            if html_resp.status_code in BLOCK_STATUSES or blocked_detected:
+                raise UrlImportError(
+                    "bot_blocked",
+                    "Moxfield blocked server-side URL import (anti-bot protection).",
+                    guidance="Open your Moxfield deck, export/paste the text list into Deck.Check.",
+                    warnings=warnings,
+                )
+            raise UrlImportError(
+                "parse_failed",
+                f"Moxfield URL could not be fetched ({html_resp.status_code}).",
+                guidance="Paste text export from Moxfield as fallback.",
+                warnings=warnings,
+            )
 
         embedded_json = _try_parse_json_from_html(html_resp.text)
         if embedded_json is None:
-            raise ValueError("Could not parse Moxfield page payload. Paste text export as fallback.")
+            if blocked_detected:
+                raise UrlImportError(
+                    "bot_blocked",
+                    "Moxfield blocked server-side URL import (anti-bot protection).",
+                    guidance="Open your Moxfield deck, export/paste the text list into Deck.Check.",
+                    warnings=warnings,
+                )
+            raise UrlImportError(
+                "parse_failed",
+                "Could not parse Moxfield page payload.",
+                guidance="Paste text export from Moxfield as fallback.",
+                warnings=warnings,
+            )
 
         decklist = decklist_from_moxfield_payload(embedded_json)
         warnings.append("Imported via HTML payload fallback instead of direct API.")

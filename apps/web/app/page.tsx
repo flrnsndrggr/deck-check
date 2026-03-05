@@ -19,6 +19,7 @@ import {
 import ReactMarkdown from "react-markdown";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "";
+type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 
 const TABS = [
   "Deck Analysis",
@@ -315,6 +316,7 @@ Deck
 export default function HomePage() {
   const [decklist, setDecklist] = useState(SAMPLE);
   const [moxfieldUrl, setMoxfieldUrl] = useState("");
+  const [urlImportNotice, setUrlImportNotice] = useState<UrlImportNotice>(null);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Deck Analysis");
   const [bracket, setBracket] = useState(3);
   const [policy, setPolicy] = useState("auto");
@@ -594,22 +596,46 @@ export default function HomePage() {
     if (!moxfieldUrl.trim()) return;
     try {
       updateStatus("importing");
+      setUrlImportNotice(null);
       const imported = await fetch(`${API}/api/decks/import-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: moxfieldUrl.trim() }),
       });
       if (!imported.ok) {
-        const detail = await imported.text();
-        throw new Error(detail || "URL import failed");
+        let message = "URL import failed. Paste text export instead.";
+        try {
+          const payload = await imported.json();
+          const detail = payload?.detail;
+          if (typeof detail === "string") {
+            message = detail;
+          } else if (detail && typeof detail === "object") {
+            const core = detail.message || "URL import failed.";
+            const guidance = detail.guidance ? ` ${detail.guidance}` : "";
+            message = `${core}${guidance}`;
+          }
+        } catch {
+          const detailText = await imported.text();
+          if (detailText) message = detailText;
+        }
+        throw new Error(message);
       }
       const payload = await imported.json();
       setDecklist(payload.decklist_text);
+      setMoxfieldUrl("");
       if (payload.warnings?.length) {
-        alert(`Imported with warnings:\n${payload.warnings.join("\n")}`);
+        setUrlImportNotice({
+          tone: "warn",
+          text: `Imported with warnings: ${payload.warnings.join(" | ")}`,
+        });
+      } else {
+        setUrlImportNotice({ tone: "info", text: "URL import succeeded." });
       }
-    } catch {
-      alert("URL import failed. Paste text export instead.");
+    } catch (err: any) {
+      setUrlImportNotice({
+        tone: "error",
+        text: err?.message || "URL import failed. Paste text export instead.",
+      });
     } finally {
       updateStatus("idle");
     }
@@ -835,6 +861,7 @@ export default function HomePage() {
           <input className="input" value={moxfieldUrl} onChange={(e) => setMoxfieldUrl(e.target.value)} placeholder="Moxfield or Archidekt URL" />
           <button className="btn" onClick={importFromUrl}>Import URL</button>
           <p className="control-help">URL import is best-effort. If blocked, paste the text export directly.</p>
+          {urlImportNotice ? <p className={`import-notice import-notice-${urlImportNotice.tone}`}>{urlImportNotice.text}</p> : null}
         </div>
 
         <div className="block stack">
