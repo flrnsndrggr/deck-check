@@ -1,0 +1,6 @@
+db_password = "replace-me"
+# Optional:
+# domain_aliases = ["deckcheck.example.com"]
+# cloudfront_acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxx"
+# route53_zone_id = "Z123456789"
+# site_domain = "deckcheck.example.com"

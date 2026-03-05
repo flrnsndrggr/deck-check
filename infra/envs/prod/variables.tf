@@ -1,0 +1,12 @@
+variable "aws_region" { type = string, default = "eu-central-1" }
+variable "name" { type = string, default = "deck-check-prod" }
+variable "vpc_cidr" { type = string, default = "10.40.0.0/16" }
+variable "db_name" { type = string, default = "commander" }
+variable "db_username" { type = string, default = "commander" }
+variable "db_password" { type = string, sensitive = true }
+variable "api_image_tag" { type = string, default = "latest" }
+variable "web_image_tag" { type = string, default = "latest" }
+variable "domain_aliases" { type = list(string), default = [] }
+variable "cloudfront_acm_certificate_arn" { type = string, default = "" }
+variable "route53_zone_id" { type = string, default = "" }
+variable "site_domain" { type = string, default = "" }

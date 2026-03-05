@@ -1,0 +1,15 @@
+{
+  "name": "@commander/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "generate:client": "node ./scripts/generate-client.mjs"
+  },
+  "dependencies": {
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.9.1"
+  }
+}
