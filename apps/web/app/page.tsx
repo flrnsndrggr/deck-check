@@ -350,7 +350,7 @@ export default function HomePage() {
   const [tablePressure, setTablePressure] = useState(30);
   const [mulliganAggression, setMulliganAggression] = useState(50);
   const [commanderPriority, setCommanderPriority] = useState(50);
-  const [budgetMaxUsd, setBudgetMaxUsd] = useState<number | "">("");
+  const [budgetMaxUsd, setBudgetMaxUsd] = useState("");
   const [detectedWincons, setDetectedWincons] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
 
@@ -520,6 +520,23 @@ export default function HomePage() {
     return fallback;
   }
 
+  function normalizeUiError(err: any, fallback: string): string {
+    const msg = String(err?.message || "").trim();
+    if (!msg) return fallback;
+    if (/body is disturbed or locked/i.test(msg) || /body stream already read/i.test(msg)) {
+      return "Import response could not be read in this browser session. Retry once; if it persists, paste Moxfield text export.";
+    }
+    return msg;
+  }
+
+  function parseBudgetCap(value: string): number | null {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed.replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed < 0) return null;
+    return parsed;
+  }
+
   async function requestJson(path: string, init: RequestInit, stage: string): Promise<any> {
     let response: Response;
     try {
@@ -528,7 +545,16 @@ export default function HomePage() {
       throw new Error(`${stage}: ${err?.message || "Network request failed."}`);
     }
 
-    const raw = await response.text();
+    let raw = "";
+    try {
+      raw = await response.text();
+    } catch (err: any) {
+      const msg = String(err?.message || "").trim();
+      if (/body is disturbed or locked/i.test(msg) || /body stream already read/i.test(msg)) {
+        throw new Error(`${stage}: response body could not be read. Retry once and paste text export if this persists.`);
+      }
+      throw new Error(`${stage}: ${msg || "Failed to read response body."}`);
+    }
     let payload: any = {};
     if (raw) {
       try {
@@ -685,7 +711,7 @@ export default function HomePage() {
     } catch (err: any) {
       setUrlImportNotice({
         tone: "error",
-        text: err?.message || "URL import failed. Paste text export instead.",
+        text: normalizeUiError(err, "URL import failed. Paste text export instead."),
       });
     } finally {
       updateStatus("idle");
@@ -780,7 +806,7 @@ export default function HomePage() {
             commander: parsed.commander,
             bracket,
             template: "balanced",
-            budget_max_usd: budgetMaxUsd === "" ? null : Number(budgetMaxUsd),
+            budget_max_usd: parseBudgetCap(budgetMaxUsd),
             sim_summary: simPayload.summary,
           }),
         },
@@ -833,7 +859,7 @@ export default function HomePage() {
       updateStatus("done");
     } catch (err: any) {
       updateStatus("failed");
-      alert(err?.message || "Run failed");
+      alert(normalizeUiError(err, "Run failed"));
     }
   }
 
@@ -876,7 +902,7 @@ export default function HomePage() {
             cards: tagRes.cards,
             selected_card: selectedCard,
             commander: parseRes?.commander,
-            budget_max_usd: budgetMaxUsd === "" ? null : Number(budgetMaxUsd),
+            budget_max_usd: parseBudgetCap(budgetMaxUsd),
           }),
         });
         if (!res.ok) {
@@ -1029,11 +1055,10 @@ export default function HomePage() {
           <p className="control-help">Optional max price per suggested add. Leave empty for no budget filter.</p>
           <input
             className="input"
-            type="number"
-            min={0}
-            step={1}
+            type="text"
+            inputMode="decimal"
             value={budgetMaxUsd}
-            onChange={(e) => setBudgetMaxUsd(e.target.value === "" ? "" : Number(e.target.value))}
+            onChange={(e) => setBudgetMaxUsd(e.target.value)}
             placeholder="e.g. 10"
           />
 
