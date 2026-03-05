@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text
 from threading import Thread
 from queue import Queue as ThreadQueue, Empty as QueueEmpty
@@ -25,6 +27,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+trusted_hosts = [x.strip() for x in settings.trusted_hosts.split(",") if x.strip()]
+if settings.environment != "local" and trusted_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+
+if settings.environment != "local" and settings.force_https:
+    app.add_middleware(HTTPSRedirectMiddleware)
 
 
 def _run_with_timeout(fn, timeout_s: float = 1.5):

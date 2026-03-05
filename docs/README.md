@@ -23,5 +23,6 @@ This repo keeps docs grouped by intent so operational references, research notes
   - [COMPLEX_SYSTEMS_ADAPTATION.md](research/COMPLEX_SYSTEMS_ADAPTATION.md)
 - Plans
   - [EXECUTION_TASKLIST.md](plans/EXECUTION_TASKLIST.md)
+  - [PUBLIC_LAUNCH_CHECKLIST.md](plans/PUBLIC_LAUNCH_CHECKLIST.md)
 - Product
   - [DESIGN_REVIEW_AND_IMPROVEMENT_BRIEF.md](product/DESIGN_REVIEW_AND_IMPROVEMENT_BRIEF.md)

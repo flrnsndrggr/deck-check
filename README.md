@@ -152,6 +152,7 @@ See [docs/research/AUTOPILOT_API_RESEARCH.md](docs/research/AUTOPILOT_API_RESEAR
 
 ## Documentation map
 See [docs/README.md](docs/README.md) for the organized doc structure (reference, research, plans, product).
+Public website hardening and legal launch items: [docs/plans/PUBLIC_LAUNCH_CHECKLIST.md](docs/plans/PUBLIC_LAUNCH_CHECKLIST.md)
 
 ## Data update pipeline
 Scheduled (daily via `scheduler` service) and on-demand update jobs:

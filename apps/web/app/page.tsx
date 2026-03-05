@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   LineChart,
   Line,
@@ -901,6 +902,12 @@ export default function HomePage() {
           />
 
           <button className="btn btn-primary" onClick={runPipeline}>Run Full Analysis</button>
+        </div>
+
+        <div className="legal-links control-help">
+          <Link href="/imprint">Imprint</Link>
+          <span>•</span>
+          <Link href="/privacy">Privacy</Link>
         </div>
 
       </aside>

@@ -28,6 +28,8 @@ services:
       SCRYFALL_BULK_PATH: /app/data/scryfall-oracle-cards.json
       RULES_CACHE_DIR: /app/data/rules
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      TRUSTED_HOSTS: localhost,127.0.0.1,api
+      FORCE_HTTPS: "0"
       PYTHONPATH: /app:/workspace/packages/sim
     volumes:
       - ./apps/api:/app
