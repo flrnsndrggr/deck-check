@@ -39,6 +39,7 @@ def test_runtime_meta_endpoint_exists():
     assert res.status_code == 200
     payload = res.json()
     assert "queue_depth" in payload
+    assert "worker_online" in payload
     assert "workers" in payload
     assert "simulation_backend" in payload
     assert "vectorized_available" in payload["simulation_backend"]
