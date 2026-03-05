@@ -15,6 +15,11 @@ Production-focused monorepo for Commander deck parsing, tagging, simulation, and
 docker compose up --build
 ```
 
+Equivalent helper script:
+```bash
+sh scripts/dev/up.sh
+```
+
 2. Open:
 - Web UI: `http://localhost:3000`
 - API docs: `http://localhost:8000/docs`
@@ -26,6 +31,16 @@ If running web outside Docker:
 3. (Optional) trigger data refresh manually:
 ```bash
 curl -X POST http://localhost:8000/api/admin/update-data
+```
+
+4. Run quick smoke checks:
+```bash
+sh scripts/dev/smoke.sh
+```
+
+5. Stop local stack:
+```bash
+sh scripts/dev/down.sh
 ```
 
 ## Migrations (Alembic)
