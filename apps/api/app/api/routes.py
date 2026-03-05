@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 from threading import Thread
 from queue import Queue as ThreadQueue, Empty as QueueEmpty
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select, text
@@ -48,6 +49,7 @@ from app.services.replacements import strictly_better_replacements
 from app.workers.queue import redis_conn, sim_queue
 from app.workers.cache import get_cached_simulation
 from app.workers.tasks import get_vector_backend_status, run_simulation_task
+from app.core.config import settings
 
 router = APIRouter(prefix="/api")
 
@@ -73,6 +75,29 @@ def _run_with_timeout(fn, timeout_s: float = 1.5):
     if ok:
         return val
     raise val
+
+
+def _has_live_workers(max_stale_seconds: int = 120) -> bool:
+    """Return True when at least one RQ worker has a recent heartbeat."""
+    try:
+        rq_workers = _run_with_timeout(lambda: Worker.all(connection=redis_conn), timeout_s=1.5)
+    except Exception:
+        return False
+
+    if not rq_workers:
+        return False
+
+    now = datetime.now(timezone.utc)
+    for w in rq_workers:
+        hb = w.last_heartbeat
+        if hb is None:
+            continue
+        if hb.tzinfo is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        age_s = (now - hb.astimezone(timezone.utc)).total_seconds()
+        if age_s <= max_stale_seconds:
+            return True
+    return False
 
 
 @router.post("/decks/import-url", response_model=DeckImportUrlResponse)
@@ -141,7 +166,20 @@ def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
 
     db.add(SimJob(job_id=job_id, status="queued", payload=payload))
     db.commit()
-    sim_queue.enqueue(run_simulation_task, job_id, payload, job_id=f"sim-{job_id}")
+
+    workers_live = _has_live_workers()
+    if workers_live:
+        try:
+            sim_queue.enqueue(run_simulation_task, job_id, payload, job_id=f"sim-{job_id}")
+            return SimRunResponse(job_id=job_id)
+        except Exception:
+            # If enqueue fails, fall through to optional inline fallback.
+            workers_live = False
+
+    # Recovery mode: if no active worker is available, execute immediately so UI polling does not stall.
+    if settings.sim_inline_fallback_no_worker and not workers_live:
+        run_simulation_task(job_id, payload)
+
     return SimRunResponse(job_id=job_id)
 
 
@@ -311,6 +349,7 @@ def runtime_meta(db: Session = Depends(get_db)):
     redis_error = ""
     queue_depth = 0
     workers = []
+    worker_online = False
     last_sim_error = ""
 
     try:
@@ -325,12 +364,20 @@ def runtime_meta(db: Session = Depends(get_db)):
             queue_depth = int(_run_with_timeout(lambda: int(sim_queue.count), timeout_s=1.5))
             rq_workers = _run_with_timeout(lambda: Worker.all(connection=redis_conn), timeout_s=1.5)
             for w in rq_workers:
+                hb_iso = w.last_heartbeat.isoformat() if w.last_heartbeat else None
+                if w.last_heartbeat is not None:
+                    hb = w.last_heartbeat
+                    if hb.tzinfo is None:
+                        hb = hb.replace(tzinfo=timezone.utc)
+                    age_s = (datetime.now(timezone.utc) - hb.astimezone(timezone.utc)).total_seconds()
+                    if age_s <= 120:
+                        worker_online = True
                 workers.append(
                     {
                         "name": w.name,
                         "state": w.get_state(),
                         "current_job_id": w.get_current_job_id(),
-                        "last_heartbeat": w.last_heartbeat.isoformat() if w.last_heartbeat else None,
+                        "last_heartbeat": hb_iso,
                     }
                 )
     except TimeoutError:
@@ -358,6 +405,7 @@ def runtime_meta(db: Session = Depends(get_db)):
         },
         "simulation_backend": vector_backend,
         "queue_depth": queue_depth,
+        "worker_online": worker_online,
         "workers": workers,
         "last_failed_simulation_error": last_sim_error,
     }

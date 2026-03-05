@@ -16,6 +16,7 @@ class Settings(BaseModel):
     max_request_bytes: int = int(os.getenv("MAX_REQUEST_BYTES", "5242880"))
     trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1,api")
     force_https: bool = os.getenv("FORCE_HTTPS", "0").lower() in {"1", "true", "yes", "on"}
+    sim_inline_fallback_no_worker: bool = os.getenv("SIM_INLINE_FALLBACK_NO_WORKER", "1").lower() in {"1", "true", "yes", "on"}
 
 
 settings = Settings()
