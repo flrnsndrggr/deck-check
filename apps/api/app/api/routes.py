@@ -36,7 +36,7 @@ from app.schemas.deck import (
 from app.services.analyzer import analyze
 from app.services.commanderspellbook import ComboIntelService
 from app.services.guides import generate_guides
-from app.services.importer import import_decklist_from_url
+from app.services.importer import UrlImportError, import_decklist_from_url
 from app.services.parser import parse_decklist
 from app.services.rules_index import search_rules
 from app.services.scryfall import CardDataService
@@ -80,6 +80,8 @@ def import_deck_url(req: DeckImportUrlRequest):
     try:
         decklist_text, source, warnings = import_decklist_from_url(req.url)
         return DeckImportUrlResponse(decklist_text=decklist_text, source=source, warnings=warnings)
+    except UrlImportError as e:
+        raise HTTPException(status_code=400, detail=e.to_detail())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

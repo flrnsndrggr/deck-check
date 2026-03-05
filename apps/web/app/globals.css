@@ -281,6 +281,34 @@ body {
   line-height: 1.35;
 }
 
+.import-notice {
+  margin: 2px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  background: #f7f7f8;
+}
+
+.import-notice-info {
+  color: #23435f;
+  border-color: #c8d7e4;
+  background: #edf4f9;
+}
+
+.import-notice-warn {
+  color: #6b4a08;
+  border-color: #ead7a9;
+  background: #fff7df;
+}
+
+.import-notice-error {
+  color: #7a1f23;
+  border-color: #eabec2;
+  background: #fff1f2;
+}
+
 .textarea {
   min-height: 280px;
   resize: vertical;
