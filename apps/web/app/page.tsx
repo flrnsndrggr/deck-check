@@ -1108,26 +1108,28 @@ export default function HomePage() {
             {(tagRes?.cards || []).length > 0 && (
               <div>
                 <strong>Card Preview</strong>
-                <table className="table" style={{ marginTop: 6 }}>
-                  <thead>
-                    <tr><th>Card</th><th>Role hint</th></tr>
-                  </thead>
-                  <tbody>
-                    {(tagRes?.cards || []).slice(0, 14).map((c: any, i: number) => (
-                      <tr key={`${c.name}-${i}`} onClick={() => setSelectedCard(c.name)} style={{ cursor: "pointer" }}>
-                        <td style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {cardThumb(c.name) ? (
-                            <img src={cardThumb(c.name)} alt={c.name} width={30} height={42} loading="lazy" style={{ borderRadius: 4, border: "1px solid #ddd" }} />
-                          ) : (
-                            <div style={{ width: 30, height: 42, borderRadius: 4, background: "#efefef", border: "1px solid #ddd" }} />
-                          )}
-                          <span>{c.name}</span>
-                        </td>
-                        <td>{(c.tags || []).slice(0, 2).join(", ") || "n/a"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="card-preview-scroll">
+                  <table className="table" style={{ marginTop: 6 }}>
+                    <thead>
+                      <tr><th>Card</th><th>Role hint</th></tr>
+                    </thead>
+                    <tbody>
+                      {(tagRes?.cards || []).map((c: any, i: number) => (
+                        <tr key={`${c.name}-${i}`} onClick={() => setSelectedCard(c.name)} style={{ cursor: "pointer" }}>
+                          <td style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {cardThumb(c.name) ? (
+                              <img src={cardThumb(c.name)} alt={c.name} width={30} height={42} loading="lazy" style={{ borderRadius: 4, border: "1px solid #ddd" }} />
+                            ) : (
+                              <div style={{ width: 30, height: 42, borderRadius: 4, background: "#efefef", border: "1px solid #ddd" }} />
+                            )}
+                            <span>{c.name}</span>
+                          </td>
+                          <td>{(c.tags || []).slice(0, 2).join(", ") || "n/a"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
