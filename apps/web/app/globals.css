@@ -173,6 +173,33 @@ body {
   pointer-events: auto;
 }
 
+.insight-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.insight-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.insight-close {
+  border: 0;
+  background: transparent;
+  color: #4d4d52;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.insight-close:hover {
+  color: #111;
+}
+
 .insight-metric {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -213,6 +240,36 @@ body {
   border-radius: 10px;
   background: #fff;
   padding: 8px;
+}
+
+.insight-no-metrics {
+  border: 1px dashed #d7d7dc;
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #666a71;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.insight-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.insight-btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-decoration: none;
+}
+
+.insight-btn.disabled {
+  background: #f3f3f5;
+  border-color: #e4e4e8;
+  color: #868690;
+  cursor: not-allowed;
 }
 
 .ui-detail {
