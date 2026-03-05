@@ -18,7 +18,20 @@ import {
 } from "recharts";
 import ReactMarkdown from "react-markdown";
 
-const API = process.env.NEXT_PUBLIC_API_BASE || "";
+const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
+const API_BASE = RAW_API_BASE.trim().replace(/^['"]|['"]$/g, "").replace(/\/+$/g, "");
+
+function apiUrl(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (!API_BASE) return normalized;
+  try {
+    return new URL(normalized, API_BASE).toString();
+  } catch {
+    throw new Error(
+      `Invalid NEXT_PUBLIC_API_BASE value "${RAW_API_BASE}". Please set a valid https://... URL.`,
+    );
+  }
+}
 type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 
 const TABS = [
@@ -553,7 +566,7 @@ export default function HomePage() {
     if (!toFetch.length) return;
     try {
       const q = encodeURIComponent(toFetch.join(","));
-      const res = await fetch(`${API}/api/cards/display?names=${q}`);
+      const res = await fetch(apiUrl(`/api/cards/display?names=${q}`));
       if (!res.ok) return;
       const payload = await res.json();
       setDisplayMap((prev) => ({ ...prev, ...(payload.cards || {}) }));
@@ -597,7 +610,7 @@ export default function HomePage() {
     try {
       updateStatus("importing");
       setUrlImportNotice(null);
-      const imported = await fetch(`${API}/api/decks/import-url`, {
+      const imported = await fetch(apiUrl("/api/decks/import-url"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: moxfieldUrl.trim() }),
@@ -644,7 +657,7 @@ export default function HomePage() {
   async function runPipeline() {
     try {
       updateStatus("parsing");
-      const parsed = await fetch(`${API}/api/decks/parse`, {
+      const parsed = await fetch(apiUrl("/api/decks/parse"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
@@ -652,7 +665,7 @@ export default function HomePage() {
       setParseRes(parsed);
 
       updateStatus("tagging");
-      const tagged = await fetch(`${API}/api/decks/tag`, {
+      const tagged = await fetch(apiUrl("/api/decks/tag"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, global_tags: true }),
@@ -664,7 +677,7 @@ export default function HomePage() {
 
       updateStatus("sim-queued");
       const effectivePolicy = computeEffectivePolicy();
-      const simJob = await fetch(`${API}/api/sim/run`, {
+      const simJob = await fetch(apiUrl("/api/sim/run"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -687,7 +700,7 @@ export default function HomePage() {
       let simPayload: any = null;
       while (!["done", "failed"].includes(simStatus)) {
         await new Promise((r) => setTimeout(r, 1000));
-        const polled = await fetch(`${API}/api/sim/${simJob.job_id}`).then((r) => r.json());
+        const polled = await fetch(apiUrl(`/api/sim/${simJob.job_id}`)).then((r) => r.json());
         simStatus = polled.status;
         simPayload = polled.result;
         updateStatus(`sim-${simStatus}`);
@@ -699,7 +712,7 @@ export default function HomePage() {
       setSimRes(simPayload);
 
       updateStatus("analyzing");
-      const ana = await fetch(`${API}/api/analyze`, {
+      const ana = await fetch(apiUrl("/api/analyze"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -714,7 +727,7 @@ export default function HomePage() {
       setAnalysis(ana);
 
       updateStatus("guides");
-      const gd = await fetch(`${API}/api/guides/generate`, {
+      const gd = await fetch(apiUrl("/api/guides/generate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ analyze: ana, sim_summary: simPayload.summary }),
@@ -790,7 +803,7 @@ export default function HomePage() {
     void (async () => {
       setStrictlyBetterLoading(true);
       try {
-        const res = await fetch(`${API}/api/cards/strictly-better`, {
+        const res = await fetch(apiUrl("/api/cards/strictly-better"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -819,7 +832,7 @@ export default function HomePage() {
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch(`${API}/api/meta/updates`);
+        const res = await fetch(apiUrl("/api/meta/updates"));
         if (!res.ok) return;
         const payload = await res.json();
         setUpdatesMeta(payload);
@@ -830,7 +843,7 @@ export default function HomePage() {
 
     void (async () => {
       try {
-        const res = await fetch(`${API}/api/meta/integrations`);
+        const res = await fetch(apiUrl("/api/meta/integrations"));
         if (!res.ok) return;
         const payload = await res.json();
         setIntegrationsMeta(payload);
