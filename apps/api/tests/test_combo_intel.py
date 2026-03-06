@@ -151,6 +151,8 @@ def test_analyzer_includes_combo_intel(monkeypatch):
     )
     assert out["combo_intel"]["combo_support_score"] == 72.0
     assert out["intent_summary"]["primary_plan"] == "Combo Assembly"
+    assert out["deck_name"]
+    assert "Cmdr" in out["deck_name"]
 
 
 def test_combo_intel_endpoint(monkeypatch):

@@ -1437,7 +1437,7 @@ export default function HomePage() {
       <section className="ui-detail">
         <div className="stack">
           <div className="panel-title-row">
-            <h3>Decklist</h3>
+            <h3>{analysis?.deck_name ? `Decklist: ${analysis.deck_name}` : "Decklist"}</h3>
             {progressMeta.show ? (
               <InlinePanelProgress
                 label={progressMeta.label}
