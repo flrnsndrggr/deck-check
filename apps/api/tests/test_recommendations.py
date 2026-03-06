@@ -187,3 +187,79 @@ def test_analyze_never_lists_commander_as_cut_or_swap(monkeypatch):
     assert not any(c.get("card") == "Commander" for c in out["cuts"])
     assert not any(s.get("cut") == "Commander" for s in out["swaps"])
     assert any(c.get("card") == "Filler Card" for c in out["cuts"])
+
+
+def test_suggest_adds_rewards_existing_type_package_fit(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.scryfall.CardDataService.search_candidates",
+        lambda *args, **kwargs: [
+            {
+                "name": "Artifact Rock",
+                "type_line": "Artifact",
+                "oracle_text": "{T}: Add {G}.",
+                "color_identity": ["G"],
+                "prices": {"usd": "1.0"},
+            },
+            {
+                "name": "Mana Dork",
+                "type_line": "Creature — Elf Druid",
+                "oracle_text": "{T}: Add {G}.",
+                "color_identity": ["G"],
+                "prices": {"usd": "1.0"},
+            },
+        ],
+    )
+    monkeypatch.setattr("app.services.edhrec.EDHRecService.get_commander_cards", lambda self, commander, limit=120: {"cards": []})
+
+    out = az.suggest_adds(
+        cards=[CardEntry(qty=1, name="Sword A", section="deck"), CardEntry(qty=1, name="Sword B", section="deck")],
+        commander_ci="G",
+        gaps=[{"role": "#Ramp", "have": 2, "target": 10, "missing": 8}],
+        bracket=3,
+        type_profile={
+            "card_types": [{"name": "Artifact", "count": 14}],
+            "subtypes": [{"name": "Equipment", "count": 5}],
+            "creature_subtypes": [],
+            "package_signals": ["Equipment density is meaningful (5 cards), which is strong Voltron signal."],
+        },
+    )
+    assert out
+    assert out[0]["card"] == "Artifact Rock"
+    assert "artifact-heavy shell" in out[0]["why"]
+
+
+def test_suggest_adds_blends_edhrec_for_partner_pair(monkeypatch):
+    monkeypatch.setattr("app.services.scryfall.CardDataService.search_candidates", lambda *args, **kwargs: [])
+
+    def fake_edhrec(self, commander, limit=120):
+        if commander == "Vial Smasher the Fierce":
+            return {"cards": [{"name": "Mystic Remora", "edhrec_score": 80.0}]}
+        if commander == "Thrasios, Triton Hero":
+            return {"cards": [{"name": "Mystic Remora", "edhrec_score": 92.0}]}
+        return {"cards": []}
+
+    monkeypatch.setattr("app.services.edhrec.EDHRecService.get_commander_cards", fake_edhrec)
+    monkeypatch.setattr(
+        "app.services.scryfall.CardDataService.get_cards_by_name",
+        lambda self, names: {
+            "Mystic Remora": {
+                "name": "Mystic Remora",
+                "type_line": "Enchantment",
+                "oracle_text": "Cumulative upkeep {1}\nWhenever an opponent casts a noncreature spell, you may draw a card unless that player pays {4}.",
+                "color_identity": ["U"],
+                "prices": {"usd": "7.50"},
+            }
+        },
+    )
+
+    out = az.suggest_adds(
+        cards=[],
+        commander_ci="UBRG",
+        gaps=[{"role": "#Draw", "have": 4, "target": 10, "missing": 6}],
+        bracket=4,
+        budget_max_usd=10.0,
+        commanders=["Vial Smasher the Fierce", "Thrasios, Triton Hero"],
+    )
+    assert any(x["card"] == "Mystic Remora" for x in out)
+    row = next(x for x in out if x["card"] == "Mystic Remora")
+    assert "both commanders" in row["why"]

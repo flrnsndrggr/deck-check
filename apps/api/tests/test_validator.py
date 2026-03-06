@@ -173,13 +173,13 @@ def test_validator_accepts_partner_pair_and_combined_color_identity():
             "type_line": "Legendary Creature — Human Cleric",
             "legalities": {"commander": "legal"},
             "color_identity": ["W", "B"],
-            "oracle_text": "Partner",
+            "oracle_text": "Lifelink\nAt the beginning of your postcombat main phase, you may pay X life, where X is the number of opponents that were dealt combat damage this turn. If you do, draw X cards.\nPartner (You can have two commanders if both have partner.)",
         },
         "Kraum, Ludevic's Opus": {
             "type_line": "Legendary Creature — Zombie Horror",
             "legalities": {"commander": "legal"},
             "color_identity": ["U", "R"],
-            "oracle_text": "Flying, haste\nPartner",
+            "oracle_text": "Flying, haste\nWhenever an opponent casts their second spell each turn, draw a card.\nPartner (You can have two commanders if both have partner.)",
         },
         "Esper Card": {
             "type_line": "Sorcery",
@@ -198,6 +198,43 @@ def test_validator_accepts_partner_pair_and_combined_color_identity():
     assert not errors
 
 
+def test_validator_accepts_original_partner_pair_with_realistic_oracle_text():
+    cards = [
+        CardEntry(qty=1, name="Vial Smasher the Fierce", section="commander"),
+        CardEntry(qty=1, name="Thrasios, Triton Hero", section="commander"),
+        CardEntry(qty=1, name="Blue Card", section="deck"),
+        CardEntry(qty=97, name="Island", section="deck"),
+    ]
+    card_map = {
+        "Vial Smasher the Fierce": {
+            "type_line": "Legendary Creature — Goblin Berserker",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["B", "R"],
+            "oracle_text": "Whenever you cast your first spell each turn, Vial Smasher the Fierce deals damage equal to that spell's mana value to an opponent chosen at random.\nPartner (You can have two commanders if both have partner.)",
+        },
+        "Thrasios, Triton Hero": {
+            "type_line": "Legendary Creature — Merfolk Wizard",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G", "U"],
+            "oracle_text": "{4}: Scry 1, then reveal the top card of your library. If it's a land card, put it onto the battlefield tapped. Otherwise draw a card.\nPartner (You can have two commanders if both have partner.)",
+        },
+        "Blue Card": {
+            "type_line": "Instant",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["U"],
+            "oracle_text": "",
+        },
+        "Island": {
+            "type_line": "Basic Land — Island",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["U"],
+            "oracle_text": "",
+        },
+    }
+    errors, _, _ = validate_deck(cards, "Vial Smasher the Fierce", card_map, 3)
+    assert not errors
+
+
 def test_validator_accepts_choose_a_background_pair():
     cards = [
         CardEntry(qty=1, name="Abdel Adrian, Gorion's Ward", section="commander"),
@@ -210,7 +247,7 @@ def test_validator_accepts_choose_a_background_pair():
             "type_line": "Legendary Creature — Human Warrior",
             "legalities": {"commander": "legal"},
             "color_identity": ["W"],
-            "oracle_text": "Choose a Background",
+            "oracle_text": "When Abdel Adrian, Gorion's Ward enters, exile any number of other nonland permanents you control until Abdel Adrian leaves the battlefield.\nChoose a Background (You can have a Background as a second commander.)",
         },
         "Candlekeep Sage": {
             "type_line": "Legendary Enchantment — Background",

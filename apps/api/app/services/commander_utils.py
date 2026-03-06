@@ -60,12 +60,16 @@ def _oracle_lines(card: Dict) -> List[str]:
     return [line.strip().lower() for line in oracle.splitlines() if line.strip()]
 
 
+def _strip_reminder_text(line: str) -> str:
+    return re.sub(r"\s*\([^)]*\)\s*$", "", str(line or "")).strip().lower()
+
+
 def has_choose_a_background(card: Dict) -> bool:
-    return any(line == "choose a background" for line in _oracle_lines(card))
+    return any(_strip_reminder_text(line).startswith("choose a background") for line in _oracle_lines(card))
 
 
 def has_doctors_companion(card: Dict) -> bool:
-    return any("doctor's companion" == line or "doctor’s companion" == line for line in _oracle_lines(card))
+    return any(_strip_reminder_text(line).startswith("doctor's companion") for line in _oracle_lines(card))
 
 
 def is_background_card(card: Dict) -> bool:
@@ -80,16 +84,17 @@ def is_doctor_card(card: Dict) -> bool:
 
 def partner_mode(card: Dict) -> tuple[str | None, str | None]:
     for line in _oracle_lines(card):
-        if line == "partner":
-            return "partner", None
-        match = _PARTNER_WITH_RE.fullmatch(line)
-        if match:
-            return "partner_with", normalize_name(match.group(1))
-        match = _PARTNER_VARIANT_RE.fullmatch(line)
+        clean = _strip_reminder_text(line)
+        if clean.startswith("partner with "):
+            remainder = clean[len("partner with ") :].strip()
+            return "partner_with", normalize_name(remainder)
+        match = _PARTNER_VARIANT_RE.fullmatch(clean)
         if match:
             return "partner_variant", normalize_name(match.group(1))
-        if line == "friends forever":
+        if clean.startswith("friends forever"):
             return "partner_variant", "friends forever"
+        if clean.startswith("partner"):
+            return "partner", None
     return None, None
 
 
@@ -129,4 +134,3 @@ def legal_commander_pairing(cards_by_name: Dict[str, Dict], commander_names: Seq
         return True, None
 
     return False, f"Commander pair is not a legal pairing: {names[0]} + {names[1]}"
-

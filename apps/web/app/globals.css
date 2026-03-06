@@ -2132,6 +2132,29 @@ body::after {
   text-transform: none;
 }
 
+.sidebar-pane {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-pane > .stack {
+  gap: 8px;
+}
+
+.sidebar-pane .sidebar-section-label {
+  margin-bottom: 2px;
+}
+
+.sidebar-run-btn-secondary {
+  background: var(--surface-1);
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+.sidebar-run-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
 .ui-detail {
   background: var(--panel);
   backdrop-filter: none;
@@ -2396,8 +2419,69 @@ body::after {
 }
 
 .resource-empty-state {
-  min-height: 280px;
-  border: 1px dashed var(--border);
+  min-height: 100%;
+  border: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.resource-empty-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--text);
+}
+
+.resource-empty-brand .wordmark-glyph {
+  width: 56px;
+  height: 56px;
+  font-size: 28px;
+}
+
+.resource-empty-brand .wordmark-text {
+  font-size: 36px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.resource-empty-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sidebar-group.sidebar-pane .block,
+.sidebar-group.sidebar-pane .setting-toggle,
+.sidebar-group.sidebar-pane .import-notice {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.sidebar-group.sidebar-pane .advanced-settings {
+  padding-top: 12px;
+}
+
+.sidebar-group.sidebar-pane .setting-toggle {
+  justify-content: space-between;
+  padding: 0;
+}
+
+.sidebar-group.sidebar-pane .setting-toggle input {
+  margin-top: 4px;
+}
+
+.sidebar-footer .control-help {
+  margin-top: 2px;
 }
 
 .table th,
