@@ -101,7 +101,13 @@ def _colored_source_score(card: Dict, commander_ci: Set[str]) -> int:
 def _functional_family(card: Dict, roles: Set[str]) -> str:
     text = _card_text(card)
     main_types = _main_types(card)
-    has_tap_mana = "{t}" in text and "add {" in text
+    has_tap_mana = "{t}" in text and (
+        "add {" in text
+        or "add one mana" in text
+        or "add two mana" in text
+        or "add three mana" in text
+        or "add one mana of" in text
+    )
     if "land" in main_types and ("add {" in text or "add one mana" in text or "add two mana" in text):
         return "mana-land"
     if "artifact" in main_types and has_tap_mana:

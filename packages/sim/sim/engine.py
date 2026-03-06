@@ -437,12 +437,12 @@ def _detect_wincon_for_turn(
 def simulate_one(
     cards: List[Card],
     commander: str | None,
-    commander_card: Card | None,
-    turn_limit: int,
-    policy: str,
-    multiplayer: bool,
-    threat_model: bool,
-    rng: random.Random,
+    commander_card: Card | None = None,
+    turn_limit: int = 8,
+    policy: str = "casual",
+    multiplayer: bool = True,
+    threat_model: bool = False,
+    rng: random.Random | None = None,
     primary_wincons: List[str] | None = None,
     color_identity_size: int = 3,
     combo_variants: List[Dict] | None = None,
@@ -450,6 +450,8 @@ def simulate_one(
     capture_trace: bool = False,
 ) -> RunMetrics:
     deck = cards.copy()
+    if rng is None:
+        rng = random.Random(42)
     policy = _policy_alias(policy, 3)
     colors_req = max(0, color_identity_size)
     if capture_trace:
