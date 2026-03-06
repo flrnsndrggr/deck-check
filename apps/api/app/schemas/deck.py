@@ -166,6 +166,8 @@ class SimRunRequest(BaseModel):
     multiplayer: bool = True
     threat_model: bool = False
     primary_wincons: List[str] = Field(default_factory=list)
+    combo_variants: List[Dict] = Field(default_factory=list)
+    combo_source_live: bool = False
     sim_backend: Literal["vectorized", "python_fallback"] = "vectorized"
     batch_size: int = Field(default=512, ge=64, le=4096)
     seed: int = 42

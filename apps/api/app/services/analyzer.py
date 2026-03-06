@@ -1201,17 +1201,28 @@ def _intent_summary(
         for t in set(c.tags):
             role_counts[t] += c.qty
 
+    supported_vectors = list((sim_summary.get("selected_wincons") or []))
     primary_plan = "Value Midrange"
     secondary = "Combat Pressure"
-    kill_vectors = ["Combat"]
-    if role_counts.get("#Combo", 0) >= 5 or (combo_intel or {}).get("matched_variants"):
+    kill_vectors = supported_vectors or ["Combat"]
+    if "Combo" in kill_vectors or role_counts.get("#Combo", 0) >= 5 or (combo_intel or {}).get("matched_variants"):
         primary_plan = "Combo Assembly"
         secondary = "Value Engine Backup"
-        kill_vectors = ["Combo", "Combat"]
-    elif role_counts.get("#Control", 0) + role_counts.get("#Counter", 0) >= 8:
+    elif "Commander Damage" in kill_vectors:
+        primary_plan = "Voltron Pressure"
+        secondary = "Combat Backup"
+    elif "Poison" in kill_vectors:
+        primary_plan = "Poison Tempo"
+        secondary = "Combat Backup"
+    elif "Drain/Burn" in kill_vectors:
+        primary_plan = "Life-Drain Attrition"
+        secondary = "Engine Value"
+    elif "Mill" in kill_vectors:
+        primary_plan = "Mill Pressure"
+        secondary = "Control Backup"
+    elif "Control Lock" in kill_vectors or role_counts.get("#Control", 0) + role_counts.get("#Counter", 0) >= 8:
         primary_plan = "Control into Inevitable Finish"
         secondary = "Commander Value"
-        kill_vectors = ["Control Lock", "Combat"]
 
     milestones = sim_summary.get("milestones", {})
     preferred_cards = [x.get("card") for x in (importance or []) if x.get("card")]

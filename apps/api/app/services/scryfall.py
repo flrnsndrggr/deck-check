@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+from urllib.parse import quote, quote_plus
 
 import httpx
 from sqlalchemy import select
@@ -13,15 +15,19 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.scryfall_cache import ScryfallCard, ScryfallName, ScryfallRuling
+from app.workers.queue import redis_conn
 
 BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
 COLLECTION_URL = "https://api.scryfall.com/cards/collection"
+NAMED_URL = "https://api.scryfall.com/cards/named"
 
 CARD_FIELDS = [
     "name",
     "oracle_id",
     "mana_cost",
     "cmc",
+    "power",
+    "toughness",
     "type_line",
     "oracle_text",
     "colors",
@@ -56,6 +62,23 @@ def _as_payload(obj: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def _cardmarket_card_url(card_name: str) -> str:
+    if not card_name:
+        return "https://www.cardmarket.com/en/Magic/Products/Search"
+    normalized = re.sub(r"\s*//\s*", " ", card_name.strip())
+    normalized = normalized.replace("’", "'")
+    slug = re.sub(r"[^A-Za-z0-9\s-]", "", normalized)
+    slug = re.sub(r"\s+", "-", slug.strip())
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        search = quote_plus(card_name.strip())
+        return f"https://www.cardmarket.com/en/Magic/Products/Search?searchString={search}"
+    return (
+        f"https://www.cardmarket.com/en/Magic/Cards/{quote(slug)}"
+        "?sellerCountry=4&language=1&minCondition=3"
+    )
 
 
 class CardDataService:
@@ -256,12 +279,38 @@ class CardDataService:
                 return True
         return False
 
+    def _has_sim_payload(self, card: Dict[str, Any]) -> bool:
+        type_line = str(card.get("type_line") or "")
+        if not type_line or card.get("oracle_text") is None:
+            return False
+        if "Creature" in type_line and card.get("power") is None:
+            return False
+        return True
+
+    def _cache_json_get(self, key: str) -> Any | None:
+        try:
+            raw = redis_conn.get(key)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def _cache_json_set(self, key: str, payload: Any, ttl_seconds: int = 86400) -> None:
+        try:
+            redis_conn.setex(key, ttl_seconds, json.dumps(payload))
+        except Exception:
+            return
+
     def get_cards_by_name(self, names: List[str]) -> Dict[str, Dict[str, Any]]:
         names = [n.strip() for n in names if n and n.strip()]
         if not names:
             return {}
         cached = self._get_cached_by_name(names)
-        stale = [n for n, card in cached.items() if not self._has_display_payload(card)]
+        stale = [n for n, card in cached.items() if not self._has_display_payload(card) or not self._has_sim_payload(card)]
         missing = [n for n in names if n not in cached]
         to_fetch = sorted(set(missing + stale))
         if to_fetch:
@@ -292,9 +341,7 @@ class CardDataService:
                 "art_crop": face_images[0].get("art_crop"),
             }
 
-        purchase = card.get("purchase_uris") or {}
-        search_name = (card.get("name") or "").replace(" ", "+")
-        cardmarket_url = purchase.get("cardmarket") or f"https://www.cardmarket.com/en/Magic/Products/Search?searchString={search_name}"
+        cardmarket_url = _cardmarket_card_url(card.get("name") or "")
         return {
             "name": card.get("name"),
             "small": image_uris.get("small"),
@@ -310,15 +357,46 @@ class CardDataService:
         card_map = self.get_cards_by_name(names)
         return {name: self.card_display(card_map.get(name, {})) for name in names if name in card_map}
 
+    def _fetch_named_card(self, client: httpx.Client, name: str) -> Dict[str, Any] | None:
+        candidates = [name]
+        if "//" not in name and "/" in name:
+            candidates.append(re.sub(r"\s*/\s*", " // ", name.strip()))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            for params in ({"exact": candidate}, {"fuzzy": candidate}):
+                try:
+                    resp = client.get(NAMED_URL, params=params)
+                    if resp.status_code >= 400:
+                        continue
+                    payload = resp.json()
+                    if payload.get("object") == "error":
+                        continue
+                    return payload
+                except Exception:
+                    continue
+        return None
+
     def fetch_collection_by_name(self, names: List[str]) -> List[Dict[str, Any]]:
         cards: List[Dict[str, Any]] = []
-        for i in range(0, len(names), 70):
-            identifiers = [{"name": n} for n in names[i : i + 70]]
-            with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=30) as client:
+            for i in range(0, len(names), 70):
+                chunk = names[i : i + 70]
+                identifiers = [{"name": n} for n in chunk]
                 resp = client.post(COLLECTION_URL, json={"identifiers": identifiers})
                 resp.raise_for_status()
                 payload = resp.json()
-            cards.extend(payload.get("data", []))
+                cards.extend(payload.get("data", []))
+
+                missing_names = [row.get("name") for row in payload.get("not_found", []) if row.get("name")]
+                for missing_name in missing_names:
+                    fallback = self._fetch_named_card(client, missing_name)
+                    if fallback:
+                        cards.append(fallback)
         return cards
 
     def get_rulings_by_oracle_id(self, card_map: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -374,6 +452,10 @@ class CardDataService:
         self._store_cards(cards)
 
     def search_candidates(self, query: str, color_identity: str, limit: int = 10) -> List[Dict[str, Any]]:
+        cache_key = f"scryfall:search:{hashlib.sha256(json.dumps({'q': query, 'ci': color_identity, 'limit': limit}, sort_keys=True).encode()).hexdigest()}"
+        cached = self._cache_json_get(cache_key)
+        if isinstance(cached, list):
+            return cached
         url = "https://api.scryfall.com/cards/search"
         ci = (color_identity or "").upper()
         ci_filter = f"id<={ci}" if ci else "id:c"
@@ -396,4 +478,5 @@ class CardDataService:
             out.append({k: d.get(k) for k in CARD_FIELDS})
             if len(out) >= limit:
                 break
+        self._cache_json_set(cache_key, out)
         return out

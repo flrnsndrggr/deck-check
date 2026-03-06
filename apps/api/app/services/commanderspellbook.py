@@ -11,6 +11,7 @@ import httpx
 from app.workers.queue import redis_conn
 
 COMMANDERSPELLBOOK_VARIANTS_URL = "https://backend.commanderspellbook.com/variants/"
+BASIC_LANDS = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
 def _deck_hash(cards: Iterable[str], commander: str | None) -> str:
@@ -89,16 +90,25 @@ class ComboIntelService:
             return
 
     def _fetch_variants_for_cards(self, cards: List[str], limit: int = 200) -> List[Dict[str, Any]]:
-        variants: List[Dict[str, Any]] = []
-        # Query by a subset of deck cards to keep requests bounded.
-        query_cards = sorted({c.strip() for c in cards if c and c.strip()})[:8]
+        unique_rows: Dict[str, Dict[str, Any]] = {}
+        query_cards: List[str] = []
+        seen_names: Set[str] = set()
+
+        for raw_name in cards:
+            name = (raw_name or "").strip()
+            lowered = name.lower()
+            if not name or lowered in seen_names or lowered in BASIC_LANDS:
+                continue
+            seen_names.add(lowered)
+            query_cards.append(name)
+
         if not query_cards:
-            return variants
+            return []
 
         with httpx.Client(timeout=self.timeout_s) as client:
             for card_name in query_cards:
                 page = 1
-                while len(variants) < limit:
+                while len(unique_rows) < limit:
                     resp = client.get(COMMANDERSPELLBOOK_VARIANTS_URL, params={"card": card_name, "limit": 50, "page": page})
                     if resp.status_code >= 400:
                         break
@@ -106,22 +116,19 @@ class ComboIntelService:
                     rows = payload.get("results") or payload.get("data") or []
                     if not rows:
                         break
-                    variants.extend(rows)
-                    if not payload.get("next"):
+                    for row in rows:
+                        rid = str(row.get("id") or row.get("variant_id") or "")
+                        if not rid:
+                            rid = hashlib.md5(json.dumps(row, sort_keys=True).encode()).hexdigest()
+                        unique_rows[rid] = row
+                    if len(unique_rows) >= limit or not payload.get("next"):
                         break
                     page += 1
                     if page > 3:
                         break
-                if len(variants) >= limit:
+                if len(unique_rows) >= limit:
                     break
-        # Deduplicate by id.
-        unique: Dict[str, Dict[str, Any]] = {}
-        for row in variants:
-            rid = str(row.get("id") or row.get("variant_id") or "")
-            if not rid:
-                rid = hashlib.md5(json.dumps(row, sort_keys=True).encode()).hexdigest()
-            unique[rid] = row
-        return list(unique.values())[:limit]
+        return list(unique_rows.values())[:limit]
 
     def get_combo_intel(self, cards: List[str], commander: str | None = None, max_variants: int = 200) -> Dict[str, Any]:
         key = self._cache_key(cards, commander)
@@ -134,7 +141,8 @@ class ComboIntelService:
         attempts = self.retries + 1
         for attempt in range(attempts):
             try:
-                variants_raw = self._fetch_variants_for_cards(cards, limit=max_variants)
+                query_cards = ([commander] if commander else []) + cards
+                variants_raw = self._fetch_variants_for_cards(query_cards, limit=max_variants)
                 break
             except Exception as exc:
                 if attempt == attempts - 1:
@@ -143,28 +151,25 @@ class ComboIntelService:
                     time.sleep(0.2 * (2**attempt))
 
         deck_names = {c.strip().lower() for c in cards if c and c.strip()}
-        normalized = [
-            _normalize_variant(row, deck_names, commander)
-            for row in variants_raw
-        ]
+        normalized = [_normalize_variant(row, deck_names, commander) for row in variants_raw]
         normalized = [row for row in normalized if row]
-        normalized.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
-
-        matched = [v for v in normalized if v["status"] == "complete"][:10]
-        near_miss = [v for v in normalized if v["status"] == "near_miss"][:10]
+        if len(variants_raw) >= max_variants:
+            warnings.append(f"CommanderSpellbook results capped at {max_variants} variants; some combo lines may be omitted.")
+        matched = [v for v in normalized if v["status"] == "complete"]
+        matched.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
         support_score = 0.0
-        if normalized:
-            top_weight = sum(v["score"] for v in normalized[:10]) / min(10, len(normalized))
+        if matched:
+            top_weight = sum(v["score"] for v in matched[:10]) / min(10, len(matched))
             hit_bonus = min(0.35, len(matched) * 0.07)
             support_score = round(min(100.0, (top_weight + hit_bonus) * 100), 1)
 
         result = {
             "source": "commanderspellbook",
             "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "source_hash": hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest() if normalized else "",
+            "source_hash": hashlib.sha256(json.dumps(matched, sort_keys=True).encode()).hexdigest() if matched else "",
             "combo_support_score": support_score,
             "matched_variants": matched,
-            "near_miss_variants": near_miss,
+            "near_miss_variants": [],
             "warnings": warnings,
         }
         self._write_cache(key, result)

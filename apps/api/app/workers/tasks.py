@@ -45,6 +45,8 @@ def run_simulation_task(job_id: str, payload: dict):
             bracket=payload.get("bracket", 3),
             primary_wincons=payload.get("primary_wincons", []),
             color_identity_size=payload.get("color_identity_size", 3),
+            combo_variants=payload.get("combo_variants", []),
+            combo_source_live=payload.get("combo_source_live", False),
         )
 
         if requested_backend == "vectorized":

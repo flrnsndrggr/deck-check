@@ -5,8 +5,8 @@
   --ink: #151515;
   --muted: #6f6f73;
   --border: #e7e7ea;
-  --radius-sm: 10px;
-  --radius-md: 14px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
   --radius-pill: 999px;
   --fs-sm: 12px;
   --fs-md: 14px;
@@ -17,6 +17,7 @@
 
 html,
 body {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -26,12 +27,16 @@ body {
   font-size: var(--fs-md);
   color: var(--ink);
   background: var(--bg);
+  overflow: hidden;
 }
 
 .ui-shell {
   display: grid;
   grid-template-columns: 248px 0px minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .ui-shell.detail-open {
@@ -45,27 +50,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.legal-links {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 2px 0;
-}
-
-.legal-links a {
-  color: var(--muted);
-  text-decoration: underline;
+  min-height: 0;
+  overflow: auto;
 }
 
 .legal-shell {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 30px 16px;
   background: var(--bg);
+  overflow: auto;
 }
 
 .legal-card {
@@ -134,14 +131,16 @@ body {
   background: var(--panel);
   padding: 16px 22px;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .outcome-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0px;
   gap: 0;
-  min-height: calc(100vh - 32px);
+  height: 100%;
+  min-height: 0;
   transition: grid-template-columns .2s ease;
 }
 
@@ -151,13 +150,16 @@ body {
 
 .outcome-content {
   min-width: 0;
+  min-height: 0;
   padding-right: 10px;
+  overflow: auto;
 }
 
 .card-insight {
   border-left: 1px solid transparent;
   background: #fcfcfd;
   overflow: auto;
+  min-height: 0;
   padding: 0;
   opacity: 0;
   transform: translateX(24px);
@@ -237,14 +239,14 @@ body {
 
 .insight-option {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: #fff;
   padding: 8px;
 }
 
 .insight-no-metrics {
   border: 1px dashed #d7d7dc;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 9px 10px;
   background: #fff;
   color: #666a71;
@@ -275,7 +277,8 @@ body {
 .ui-detail {
   border-right: 1px solid transparent;
   opacity: 0;
-  overflow: hidden;
+  overflow: auto;
+  min-height: 0;
   transition: opacity .15s ease;
   background: #fdfdfe;
 }
@@ -288,7 +291,7 @@ body {
 
 .btn {
   border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   background: #fff;
   color: #111;
   padding: 7px 12px;
@@ -315,12 +318,19 @@ body {
   gap: 8px;
 }
 
+.card-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .card-preview-scroll {
   margin-top: 6px;
   max-height: 56vh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: #fff;
 }
 
@@ -333,6 +343,70 @@ body {
   top: 0;
   z-index: 1;
   background: #fff;
+}
+
+.card-preview-row.is-commander {
+  background: #f6f8fb;
+}
+
+.card-preview-row.is-commander td {
+  border-bottom-color: #e3e7ef;
+}
+
+.card-preview-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.card-preview-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cfd7e5;
+  background: #eef3fb;
+  color: #29405d;
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.deck-progress {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #f9f9fa;
+  padding: 9px 10px;
+}
+
+.deck-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.deck-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e9e9ed;
+}
+
+.deck-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #111;
+  transition: width .22s ease;
+}
+
+.deck-progress-fill.is-error {
+  background: #a52a2a;
 }
 
 .input, .textarea, .select {
@@ -358,10 +432,40 @@ body {
   line-height: 1.35;
 }
 
+.setting-toggle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 10px;
+  background: #fafafc;
+  cursor: pointer;
+}
+
+.setting-toggle input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  accent-color: #111;
+  flex: 0 0 auto;
+}
+
+.setting-toggle-help {
+  display: block;
+  margin: 4px 0 0;
+}
+
+.advanced-settings {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
 .import-notice {
   margin: 2px 0 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 7px 8px;
   font-size: 12px;
   line-height: 1.35;
@@ -410,6 +514,19 @@ body {
   background: #fff;
 }
 
+.resource-empty-state {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.resource-empty-state h2,
+.resource-empty-state p {
+  margin: 0;
+}
+
 .tab-list {
   display: flex;
   flex-direction: column;
@@ -428,7 +545,7 @@ body {
 }
 
 .chip {
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
   font-size: 11px;
 }
@@ -441,9 +558,44 @@ body {
 
 .mini-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: #fcfcfd;
   padding: 8px;
+}
+
+.combo-variant-card {
+  gap: 10px;
+}
+
+.combo-variant-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.combo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+
+.combo-badge-complete {
+  color: #10613d;
+  background: #eef8f1;
+  border-color: #cfe6d6;
+}
+
+.combo-badge-nearmiss {
+  color: #9a6a09;
+  background: #fff6e5;
+  border-color: #eed7a6;
 }
 
 .mini-label {
@@ -548,7 +700,7 @@ body {
 
 .metric-help {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: #f7f7f8;
   padding: 8px 10px;
   margin: 6px 0 10px;
@@ -564,7 +716,7 @@ body {
   color: #242428;
   background: #f4f5f7;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 8px 10px;
 }
 

@@ -12,6 +12,29 @@ class Card:
     name: str
     tags: List[str] = field(default_factory=list)
     mana_value: int = 2
+    type_line: str = ""
+    oracle_text: str = ""
+    keywords: List[str] = field(default_factory=list)
+    power: float = 0.0
+    toughness: float = 0.0
+    is_creature: bool = False
+    is_permanent: bool = False
+    has_haste: bool = False
+    is_commander: bool = False
+    evasion_score: float = 0.0
+    combat_buff: float = 0.0
+    commander_buff: float = 0.0
+    token_attack_power: float = 0.0
+    token_bodies: float = 0.0
+    extra_combat_factor: float = 1.0
+    infect: bool = False
+    toxic: float = 0.0
+    proliferate: bool = False
+    burn_value: float = 0.0
+    repeatable_burn: float = 0.0
+    mill_value: float = 0.0
+    repeatable_mill: float = 0.0
+    alt_win_kind: str | None = None
 
 
 @dataclass
@@ -32,7 +55,217 @@ class RunMetrics:
     cast_cards: set[str]
     win_turn: int | None
     achieved_wincon: str | None
+    win_reason: str | None
     trace: Dict | None = None
+
+
+def _normalize_name(name: str | None) -> str:
+    return (name or "").strip().lower()
+
+
+def _build_sim_deck(cards: List[dict], commander: str | None) -> tuple[List[Card], Card | None]:
+    commander_key = _normalize_name(commander)
+    commander_card: Card | None = None
+    deck: List[Card] = []
+
+    for c in cards:
+        qty = int(c.get("qty", 1))
+        card = Card(
+            name=c["name"],
+            tags=c.get("tags", []),
+            mana_value=c.get("mana_value", 2),
+            type_line=str(c.get("type_line") or ""),
+            oracle_text=str(c.get("oracle_text") or ""),
+            keywords=list(c.get("keywords") or []),
+            power=float(c.get("power") or 0.0),
+            toughness=float(c.get("toughness") or 0.0),
+            is_creature=bool(c.get("is_creature", False)),
+            is_permanent=bool(c.get("is_permanent", False)),
+            has_haste=bool(c.get("has_haste", False)),
+            is_commander=bool(c.get("is_commander", False)),
+            evasion_score=float(c.get("evasion_score") or 0.0),
+            combat_buff=float(c.get("combat_buff") or 0.0),
+            commander_buff=float(c.get("commander_buff") or 0.0),
+            token_attack_power=float(c.get("token_attack_power") or 0.0),
+            token_bodies=float(c.get("token_bodies") or 0.0),
+            extra_combat_factor=float(c.get("extra_combat_factor") or 1.0),
+            infect=bool(c.get("infect", False)),
+            toxic=float(c.get("toxic") or 0.0),
+            proliferate=bool(c.get("proliferate", False)),
+            burn_value=float(c.get("burn_value") or 0.0),
+            repeatable_burn=float(c.get("repeatable_burn") or 0.0),
+            mill_value=float(c.get("mill_value") or 0.0),
+            repeatable_mill=float(c.get("repeatable_mill") or 0.0),
+            alt_win_kind=c.get("alt_win_kind"),
+        )
+        section = str(c.get("section", "deck") or "deck").strip().lower()
+        is_commander = commander_key and _normalize_name(c.get("name")) == commander_key
+
+        if is_commander and (section == "commander" or commander_card is None):
+            commander_card = card
+            if section != "deck":
+                continue
+        if section != "deck":
+            continue
+        if is_commander:
+            continue
+        for _ in range(max(1, qty)):
+            deck.append(
+                Card(
+                    name=card.name,
+                    tags=list(card.tags),
+                    mana_value=card.mana_value,
+                    type_line=card.type_line,
+                    oracle_text=card.oracle_text,
+                    keywords=list(card.keywords),
+                    power=card.power,
+                    toughness=card.toughness,
+                    is_creature=card.is_creature,
+                    is_permanent=card.is_permanent,
+                    has_haste=card.has_haste,
+                    is_commander=card.is_commander,
+                    evasion_score=card.evasion_score,
+                    combat_buff=card.combat_buff,
+                    commander_buff=card.commander_buff,
+                    token_attack_power=card.token_attack_power,
+                    token_bodies=card.token_bodies,
+                    extra_combat_factor=card.extra_combat_factor,
+                    infect=card.infect,
+                    toxic=card.toxic,
+                    proliferate=card.proliferate,
+                    burn_value=card.burn_value,
+                    repeatable_burn=card.repeatable_burn,
+                    mill_value=card.mill_value,
+                    repeatable_mill=card.repeatable_mill,
+                    alt_win_kind=card.alt_win_kind,
+                )
+            )
+
+    return deck, commander_card
+
+
+def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
+    normalized: List[Dict] = []
+    for variant in combo_variants or []:
+        raw_cards = variant.get("cards") or []
+        cards = []
+        keys = set()
+        for name in raw_cards:
+            key = _normalize_name(str(name))
+            if not key:
+                continue
+            keys.add(key)
+            cards.append(str(name).strip())
+        if not keys:
+            continue
+        normalized.append(
+            {
+                "variant_id": str(variant.get("variant_id") or ""),
+                "cards": cards,
+                "keys": keys,
+            }
+        )
+    return normalized
+
+
+def _live_combo_reason(
+    combo_variants: List[Dict],
+    battlefield: List[Card],
+    commander: str | None,
+    commander_live: bool,
+) -> str | None:
+    if not combo_variants:
+        return None
+    live_cards = {_normalize_name(card.name) for card in battlefield}
+    if commander and commander_live:
+        live_cards.add(_normalize_name(commander))
+    for variant in combo_variants:
+        if variant["keys"].issubset(live_cards):
+            card_list = ", ".join(variant["cards"])
+            return f"All required cards for the CommanderSpellbook combo are live: {card_list}."
+    return None
+
+
+def _combat_metrics(
+    battlefield: List[Card],
+    cast_this_turn: List[Card],
+    commander_card: Card | None,
+    commander_live: bool,
+) -> Dict[str, float]:
+    summoning_names = {c.name for c in cast_this_turn if not c.has_haste}
+    attackers = [c for c in battlefield if c.is_creature and (c.has_haste or c.name not in summoning_names)]
+    combat_buff = sum(c.combat_buff for c in battlefield)
+    commander_buff = sum(c.commander_buff for c in battlefield)
+    token_attack_power = sum(
+        c.token_attack_power
+        for c in battlefield
+        if c.has_haste or c.name not in summoning_names
+    )
+    token_bodies = sum(
+        c.token_bodies
+        for c in battlefield
+        if c.has_haste or c.name not in summoning_names
+    )
+    extra_combat = max([1.0] + [c.extra_combat_factor for c in battlefield])
+    base_power = sum(max(0.0, c.power) for c in attackers)
+    body_count = len(attackers) + token_bodies
+    avg_evasion = (sum(c.evasion_score for c in attackers) / len(attackers)) if attackers else 0.0
+    evasion_factor = min(1.0, 0.55 + avg_evasion)
+    combat_damage = max(0.0, (base_power + token_attack_power + combat_buff * body_count) * extra_combat * evasion_factor)
+
+    commander_damage = 0.0
+    poison_damage = 0.0
+    if commander_card and commander_live:
+        commander_evasion = min(1.0, 0.55 + commander_card.evasion_score)
+        commander_attack = max(0.0, commander_card.power + commander_buff + combat_buff)
+        commander_damage = commander_attack * extra_combat * commander_evasion
+
+    for attacker in attackers:
+        if attacker.infect:
+            poison_damage += max(0.0, attacker.power) * extra_combat * min(1.0, 0.55 + attacker.evasion_score)
+        if attacker.toxic > 0:
+            poison_damage += attacker.toxic * extra_combat * min(1.0, 0.55 + attacker.evasion_score)
+    if poison_damage > 0 and any(c.proliferate for c in cast_this_turn):
+        poison_damage += 1.0
+
+    return {
+        "combat_damage": combat_damage,
+        "commander_damage": commander_damage,
+        "poison_damage": poison_damage,
+    }
+
+
+def _alt_win_ready(
+    battlefield: List[Card],
+    turn: int,
+    cast_this_turn: List[Card],
+    library_size: int,
+    graveyard_count: int,
+) -> str | None:
+    artifact_count = sum(1 for c in battlefield if "artifact" in c.type_line.lower())
+    creature_count = sum(1 for c in battlefield if c.is_creature) + int(sum(c.token_bodies for c in battlefield))
+    current_cast = {c.name for c in cast_this_turn}
+    for card in battlefield:
+        if not card.alt_win_kind:
+            continue
+        text = card.oracle_text.lower()
+        if card.alt_win_kind == "generic" and card.name in current_cast:
+            return f"{card.name} has explicit 'you win the game' text and resolved this turn."
+        if "at the beginning of your upkeep" in text and card.name in current_cast:
+            continue
+        if card.alt_win_kind == "life40" and turn >= 2:
+            return f"{card.name} checks 40-or-more life, which goldfish preserves by default."
+        if card.alt_win_kind == "artifacts20" and artifact_count >= 20:
+            return f"{card.name} saw 20 or more artifacts on board."
+        if card.alt_win_kind == "creatures20" and creature_count >= 20:
+            return f"{card.name} saw 20 or more creatures on board."
+        if card.alt_win_kind == "graveyard20" and graveyard_count >= 20:
+            return f"{card.name} saw 20 or more cards in graveyard."
+        if card.alt_win_kind == "library2" and library_size <= 2:
+            return f"{card.name} reduced the library to two or fewer cards."
+        if card.alt_win_kind == "library0" and library_size <= 0:
+            return f"{card.name} emptied the library."
+    return None
 
 
 def _is_land(card: Card) -> bool:
@@ -122,7 +355,7 @@ def _policy_alias(policy: str, bracket: int) -> str:
 
 def _normalize_wincons(primary_wincons: List[str] | None) -> List[str]:
     if not primary_wincons:
-        return ["Combat", "Combo", "Commander Damage", "Control Lock", "Alt Win"]
+        return ["Combo", "Alt Win", "Poison", "Commander Damage", "Drain/Burn", "Mill", "Control Lock", "Combat"]
     return primary_wincons
 
 
@@ -133,44 +366,92 @@ def _detect_wincon_for_turn(
     turn: int,
     commander_cast_turn: int | None,
     mana_total: int,
-) -> str | None:
+    commander: str | None = None,
+    commander_live: bool = False,
+    commander_card: Card | None = None,
+    combo_variants: List[Dict] | None = None,
+    combo_source_live: bool = False,
+    library_size: int = 0,
+    graveyard_count: int = 0,
+    combat_damage_total: float = 0.0,
+    commander_damage_total: float = 0.0,
+    poison_total: float = 0.0,
+    burn_total: float = 0.0,
+    mill_total: float = 0.0,
+) -> Tuple[str | None, str | None]:
     cast_tags = {t for c in cast_this_turn for t in c.tags}
     battlefield_tags = {t for c in battlefield for t in c.tags}
     engine_count = sum(1 for c in battlefield if "#Engine" in c.tags)
     payoff_count = sum(1 for c in battlefield if "#Payoff" in c.tags or "#Wincon" in c.tags)
+    combo_count = sum(1 for c in battlefield if "#Combo" in c.tags)
+    combo_cast_count = sum(1 for c in cast_this_turn if "#Combo" in c.tags)
+    tutor_cast = any("#Tutor" in c.tags for c in cast_this_turn)
+    wincon_cast = any("#Wincon" in c.tags for c in cast_this_turn)
 
     for w in selected_wincons:
         if w == "Combo":
-            if "#Combo" in cast_tags or ("#Tutor" in cast_tags and payoff_count >= 2 and turn >= 4):
-                return w
+            if combo_source_live:
+                live_reason = _live_combo_reason(combo_variants or [], battlefield, commander, commander_live)
+                if live_reason:
+                    return w, live_reason
+            else:
+                direct_combo_close = combo_cast_count >= 1 and wincon_cast and payoff_count >= 2 and turn >= 5
+                assembled_combo_shell = (
+                    (combo_cast_count >= 1 or tutor_cast)
+                    and combo_count >= 2
+                    and payoff_count >= 3
+                    and engine_count >= 1
+                    and mana_total >= 7
+                    and turn >= 6
+                )
+                if direct_combo_close:
+                    return w, "Combo piece plus explicit win piece resolved with enough support already in play."
+                if assembled_combo_shell:
+                    return w, "Multiple combo and payoff pieces with an active engine crossed the deterministic combo threshold."
         if w == "Combat":
-            if turn >= 5 and payoff_count >= 2:
-                return w
+            metrics = _combat_metrics(battlefield, cast_this_turn, commander_card, commander_live)
+            if (combat_damage_total >= 90) or (metrics["combat_damage"] >= 36 and turn >= 5):
+                return w, f"Projected combat pressure reached {combat_damage_total:.1f} effective damage."
         if w == "Commander Damage":
-            if commander_cast_turn is not None and turn >= commander_cast_turn + 2 and mana_total >= 6:
-                return w
+            if commander_cast_turn is not None and commander_damage_total >= 21:
+                return w, f"Projected commander damage reached {commander_damage_total:.1f}."
+        if w == "Poison":
+            if poison_total >= 10:
+                return w, f"Projected poison counters reached {poison_total:.1f}."
+        if w == "Drain/Burn":
+            if burn_total >= 40:
+                return w, f"Noncombat damage/life-loss lines reached {burn_total:.1f} damage."
+        if w == "Mill":
+            if mill_total >= 90:
+                return w, f"Mill lines reached {mill_total:.1f} cards."
         if w == "Control Lock":
             if turn >= 6 and engine_count >= 2 and ("#Counter" in battlefield_tags or "#Stax" in battlefield_tags):
-                return w
+                return w, "Lock pieces and engines combined into a board state opponents are unlikely to beat."
         if w == "Alt Win":
-            if "#Wincon" in cast_tags and turn >= 5:
-                return w
-    return None
+            alt_reason = _alt_win_ready(battlefield, turn, cast_this_turn, library_size, graveyard_count)
+            if alt_reason:
+                return w, alt_reason
+    return None, None
 
 
 def simulate_one(
     cards: List[Card],
     commander: str | None,
-    turn_limit: int,
-    policy: str,
-    multiplayer: bool,
-    threat_model: bool,
-    rng: random.Random,
+    commander_card: Card | None = None,
+    turn_limit: int = 8,
+    policy: str = "casual",
+    multiplayer: bool = True,
+    threat_model: bool = False,
+    rng: random.Random | None = None,
     primary_wincons: List[str] | None = None,
     color_identity_size: int = 3,
+    combo_variants: List[Dict] | None = None,
+    combo_source_live: bool = False,
     capture_trace: bool = False,
 ) -> RunMetrics:
     deck = cards.copy()
+    if rng is None:
+        rng = random.Random(42)
     policy = _policy_alias(policy, 3)
     colors_req = max(0, color_identity_size)
     if capture_trace:
@@ -199,6 +480,13 @@ def simulate_one(
     lands_played_this_turn = 0
     commander_tax = 0
     commander_cast_turn = None
+    commander_live = False
+    graveyard_count = 0
+    combat_damage_total = 0.0
+    commander_damage_total = 0.0
+    poison_total = 0.0
+    burn_total = 0.0
+    mill_total = 0.0
     cards_seen = len(hand)
     seen_cards = {c.name for c in hand}
     cast_cards = set()
@@ -213,6 +501,7 @@ def simulate_one(
     draw_engine_turn = None
     win_turn = None
     achieved_wincon = None
+    win_reason = None
     selected_wincons = _normalize_wincons(primary_wincons)
     opening_hand = [c.name for c in hand]
     turn_trace: List[Dict] = []
@@ -247,7 +536,11 @@ def simulate_one(
             c = hand[i]
             if c.mana_value <= available_mana and ("#Ramp" in c.tags or "#FastMana" in c.tags):
                 available_mana -= c.mana_value
-                battlefield.append(hand.pop(i))
+                hand.pop(i)
+                if c.is_permanent:
+                    battlefield.append(c)
+                else:
+                    graveyard_count += 1
                 cast_cards.add(c.name)
                 cast_this_turn.append(c)
                 cast_names.append(c.name)
@@ -259,7 +552,11 @@ def simulate_one(
             c = hand[i]
             if c.mana_value <= available_mana and "#Draw" in c.tags:
                 available_mana -= c.mana_value
-                battlefield.append(hand.pop(i))
+                hand.pop(i)
+                if c.is_permanent:
+                    battlefield.append(c)
+                else:
+                    graveyard_count += 1
                 cast_cards.add(c.name)
                 cast_this_turn.append(c)
                 cast_names.append(c.name)
@@ -268,7 +565,7 @@ def simulate_one(
 
         # 4) cast commander based on policy
         if commander and commander_cast_turn is None:
-            cmd = next((c for c in cards if c.name == commander), None)
+            cmd = commander_card
             if cmd:
                 cmd_cost = cmd.mana_value + commander_tax
                 should_cast = (policy in {"commander-centric", "optimized", "casual"} and turn >= 3) or (
@@ -277,14 +574,19 @@ def simulate_one(
                 if should_cast and cmd_cost <= available_mana:
                     available_mana -= cmd_cost
                     commander_cast_turn = turn
+                    commander_live = True
                     cast_names.append(commander)
 
         # 5/6) play plan pieces
         for i in range(len(hand) - 1, -1, -1):
             c = hand[i]
-            if c.mana_value <= available_mana and any(t in c.tags for t in ["#Payoff", "#Engine", "#Setup", "#Tutor", "#Wincon"]):
+            if c.mana_value <= available_mana and any(t in c.tags for t in ["#Payoff", "#Engine", "#Setup", "#Tutor", "#Wincon", "#Combo"]):
                 available_mana -= c.mana_value
-                battlefield.append(hand.pop(i))
+                hand.pop(i)
+                if c.is_permanent:
+                    battlefield.append(c)
+                else:
+                    graveyard_count += 1
                 cast_cards.add(c.name)
                 cast_this_turn.append(c)
                 cast_names.append(c.name)
@@ -297,6 +599,8 @@ def simulate_one(
                     available_mana -= c.mana_value
                     cast_cards.add(c.name)
                     hand.pop(i)
+                    if not c.is_permanent:
+                        graveyard_count += 1
                     cast_this_turn.append(c)
                     cast_names.append(c.name)
                     break
@@ -324,7 +628,18 @@ def simulate_one(
         progress += len([c for c in battlefield if "#Engine" in c.tags]) * 1.0
         if commander_cast_turn is not None:
             progress += 1.2
+        combat_snapshot = _combat_metrics(battlefield, cast_this_turn, commander_card, commander_live)
+        progress += min(6.0, combat_snapshot["combat_damage"] / 10.0)
+        progress += min(5.0, combat_snapshot["commander_damage"] / 6.0)
+        progress += min(4.0, burn_total / 10.0)
         plan_progress.append(progress)
+
+        cast_name_set = {c.name for c in cast_this_turn}
+        combat_damage_total += combat_snapshot["combat_damage"]
+        commander_damage_total += combat_snapshot["commander_damage"]
+        poison_total += combat_snapshot["poison_damage"]
+        burn_total += sum(c.burn_value for c in cast_this_turn) + sum(c.repeatable_burn for c in battlefield if c.name not in cast_name_set)
+        mill_total += sum(c.mill_value for c in cast_this_turn) + sum(c.repeatable_mill for c in battlefield if c.name not in cast_name_set)
 
         engine_count = len([c for c in battlefield if "#Engine" in c.tags])
         if any(t in c.tags for c in cast_this_turn for t in ["#Combo", "#Wincon", "#Payoff"]):
@@ -335,18 +650,32 @@ def simulate_one(
             phase_by_turn.append("setup")
 
         wincon_hit = None
+        wincon_reason = None
         if win_turn is None:
-            wincon_hit = _detect_wincon_for_turn(
+            wincon_hit, wincon_reason = _detect_wincon_for_turn(
                 selected_wincons=selected_wincons,
                 cast_this_turn=cast_this_turn,
                 battlefield=battlefield,
                 turn=turn,
                 commander_cast_turn=commander_cast_turn,
                 mana_total=mana_total,
+                commander=commander,
+                commander_live=commander_live,
+                commander_card=commander_card,
+                combo_variants=combo_variants,
+                combo_source_live=combo_source_live,
+                library_size=len(lib),
+                graveyard_count=graveyard_count,
+                combat_damage_total=combat_damage_total,
+                commander_damage_total=commander_damage_total,
+                poison_total=poison_total,
+                burn_total=burn_total,
+                mill_total=mill_total,
             )
             if wincon_hit is not None:
                 win_turn = turn
                 achieved_wincon = wincon_hit
+                win_reason = wincon_reason
 
         if capture_trace:
             turn_trace.append(
@@ -359,6 +688,7 @@ def simulate_one(
                     "mana_total": mana_total,
                     "phase": phase_by_turn[-1] if phase_by_turn else "setup",
                     "wincon_hit": wincon_hit,
+                    "win_reason": wincon_reason,
                 }
             )
 
@@ -381,6 +711,7 @@ def simulate_one(
         cast_cards=cast_cards,
         win_turn=win_turn,
         achieved_wincon=achieved_wincon,
+        win_reason=win_reason,
         trace={
             "opening_hand": opening_hand,
             "mulligan_steps": mulligan_steps,
@@ -428,14 +759,13 @@ def run_simulation_batch(
     bracket: int = 3,
     primary_wincons: List[str] | None = None,
     color_identity_size: int = 3,
+    combo_variants: List[Dict] | None = None,
+    combo_source_live: bool = False,
 ) -> Dict:
     rng = random.Random(seed)
-
-    deck = []
-    for c in cards:
-        qty = c.get("qty", 1)
-        for _ in range(qty):
-            deck.append(Card(name=c["name"], tags=c.get("tags", []), mana_value=c.get("mana_value", 2)))
+    selected_wincons = _normalize_wincons(primary_wincons)
+    deck, commander_card = _build_sim_deck(cards, commander)
+    normalized_combo_variants = _normalize_combo_variants(combo_variants)
 
     results: List[RunMetrics] = []
     decision_samples = []
@@ -448,6 +778,7 @@ def run_simulation_batch(
         out = simulate_one(
             deck,
             commander,
+            commander_card,
             turn_limit,
             policy,
             multiplayer,
@@ -455,6 +786,8 @@ def run_simulation_batch(
             local_rng,
             primary_wincons=primary_wincons,
             color_identity_size=color_identity_size,
+            combo_variants=normalized_combo_variants,
+            combo_source_live=combo_source_live,
         )
         if i < 20:
             decision_samples.append(
@@ -599,6 +932,7 @@ def run_simulation_batch(
         replay = simulate_one(
             deck,
             commander,
+            commander_card,
             turn_limit,
             policy,
             multiplayer,
@@ -606,6 +940,8 @@ def run_simulation_batch(
             random.Random(run_seeds[idx]),
             primary_wincons=primary_wincons,
             color_identity_size=color_identity_size,
+            combo_variants=normalized_combo_variants,
+            combo_source_live=combo_source_live,
             capture_trace=True,
         )
         trace = replay.trace or {}
@@ -616,6 +952,7 @@ def run_simulation_batch(
                 "seed": run_seeds[idx],
                 "win_turn": replay.win_turn,
                 "wincon": replay.achieved_wincon,
+                "win_reason": replay.win_reason,
                 "mulligans_taken": replay.mulligans_taken,
                 "mulligan_steps": trace.get("mulligan_steps", []),
                 "opening_hand": trace.get("opening_hand", []),
@@ -628,6 +965,7 @@ def run_simulation_batch(
         "seed": seed,
         "policy": policy,
         "turn_limit": turn_limit,
+        "selected_wincons": selected_wincons,
         "milestones": {
             "p_mana4_t3": p_mana4_t3,
             "p_mana5_t4": p_mana5_t4,
@@ -675,6 +1013,10 @@ def run_simulation_batch(
         },
         "color_profile": {
             "color_identity_size": color_identity_size,
+        },
+        "combo_detection": {
+            "source_live": combo_source_live,
+            "matched_variants": len(normalized_combo_variants),
         },
     }
 
