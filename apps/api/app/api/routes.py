@@ -10,7 +10,7 @@ from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 from rq import Worker
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.project import Project
 from app.models.project_version import ProjectVersion
 from app.models.password_reset_token import PasswordResetToken
@@ -486,7 +486,7 @@ def tags_taxonomy():
 
 
 @router.post("/sim/run", response_model=SimRunResponse)
-def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
+def run_sim(req: SimRunRequest):
     payload = req.model_dump()
     lookup_names = [c.name for c in req.cards]
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
@@ -504,14 +504,14 @@ def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
     payload["primary_wincons"] = infer_supported_wincons(payload["cards"], commander_names, combo_intel)
     cached = get_cached_simulation(payload)
     job_id = str(uuid4())
-    if cached is not None:
-        db.add(SimJob(job_id=job_id, status="done", payload=payload, result=cached))
-        db.commit()
-        return SimRunResponse(job_id=job_id)
+    with SessionLocal() as db:
+        if cached is not None:
+            db.add(SimJob(job_id=job_id, status="done", payload=payload, result=cached))
+            db.commit()
+            return SimRunResponse(job_id=job_id)
 
-    db.add(SimJob(job_id=job_id, status="queued", payload=payload))
-    db.commit()
-    db.close()
+        db.add(SimJob(job_id=job_id, status="queued", payload=payload))
+        db.commit()
 
     workers_live = _has_live_workers()
     if workers_live:
