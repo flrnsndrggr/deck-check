@@ -20,6 +20,10 @@ from app.workers.queue import redis_conn
 BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
 COLLECTION_URL = "https://api.scryfall.com/cards/collection"
 NAMED_URL = "https://api.scryfall.com/cards/named"
+RANDOM_URL = "https://api.scryfall.com/cards/random"
+SEARCH_URL = "https://api.scryfall.com/cards/search"
+UNIVERSES_BEYOND_SET_TYPES = {"universes_beyond"}
+ART_PREFERENCES = {"original", "classic", "clean", "showcase", "newest"}
 
 CARD_FIELDS = [
     "name",
@@ -27,6 +31,14 @@ CARD_FIELDS = [
     "mana_cost",
     "cmc",
     "released_at",
+    "set_name",
+    "set_type",
+    "frame",
+    "border_color",
+    "full_art",
+    "promo",
+    "promo_types",
+    "frame_effects",
     "power",
     "toughness",
     "type_line",
@@ -47,6 +59,7 @@ CARD_FIELDS = [
     "layout",
     "scryfall_uri",
     "rulings_uri",
+    "prints_search_uri",
     "image_status",
     "related_cards",
     "all_parts",
@@ -80,6 +93,16 @@ def _cardmarket_card_url(card_name: str) -> str:
         f"https://www.cardmarket.com/en/Magic/Cards/{quote(slug)}"
         "?sellerCountry=4&language=1&minCondition=3"
     )
+
+
+def _scryfall_search_url(card_name: str) -> str:
+    query = quote_plus(f'!"{card_name.strip()}"')
+    return f"https://scryfall.com/search?q={query}"
+
+
+def _normalize_art_preference(value: str | None) -> str:
+    pref = str(value or "").strip().lower()
+    return pref if pref in ART_PREFERENCES else "clean"
 
 
 class CardDataService:
@@ -308,12 +331,170 @@ class CardDataService:
         except Exception:
             return
 
+    def _display_sort_key(self, card: Dict[str, Any]) -> tuple:
+        set_type = str(card.get("set_type") or "").strip().lower()
+        games = set(card.get("games") or [])
+        has_image = self._has_display_payload(card)
+        released_at = str(card.get("released_at") or "")
+        preferred_set_bucket = 0
+        if set_type in {"expansion", "core"}:
+            preferred_set_bucket = 4
+        elif set_type in {"masters", "commander", "draft_innovation"}:
+            preferred_set_bucket = 3
+        elif set_type in {"promo", "box", "arsenal", "spellbook"}:
+            preferred_set_bucket = 1
+        return (
+            1 if set_type not in UNIVERSES_BEYOND_SET_TYPES else 0,
+            1 if "paper" in games else 0,
+            1 if has_image else 0,
+            preferred_set_bucket,
+            released_at,
+        )
+
+    def _is_showcase_like(self, card: Dict[str, Any]) -> bool:
+        if bool(card.get("full_art")):
+            return True
+        if str(card.get("border_color") or "").strip().lower() == "borderless":
+            return True
+        promo_types = {str(x).strip().lower() for x in (card.get("promo_types") or [])}
+        if promo_types & {"showcase", "borderless", "fullart", "concept", "halofoil", "galaxyfoil"}:
+            return True
+        frame_effects = {str(x).strip().lower() for x in (card.get("frame_effects") or [])}
+        if frame_effects & {"showcase", "extendedart", "legendary", "inverted", "etched", "snow", "shatteredglass"}:
+            return True
+        return False
+
+    def _frame_rank(self, card: Dict[str, Any]) -> int:
+        frame = str(card.get("frame") or "").strip().lower()
+        if frame in {"1993", "1997"}:
+            return 3
+        if frame == "2003":
+            return 2
+        if frame in {"2015", "future"}:
+            return 0
+        return 1
+
+    def _is_regular_modern_printing(self, card: Dict[str, Any]) -> bool:
+        set_type = str(card.get("set_type") or "").strip().lower()
+        if self._is_showcase_like(card):
+            return False
+        if bool(card.get("promo")):
+            return False
+        if set_type in {"promo", "box", "arsenal", "spellbook"}:
+            return False
+        return True
+
+    def _art_preference_sort_key(self, card: Dict[str, Any], art_preference: str) -> tuple:
+        art_preference = _normalize_art_preference(art_preference)
+        released_at = str(card.get("released_at") or "")
+        set_type = str(card.get("set_type") or "").strip().lower()
+        showcase_like = self._is_showcase_like(card)
+        regular_modern = self._is_regular_modern_printing(card)
+        frame_rank = self._frame_rank(card)
+        set_bucket = 0
+        if set_type in {"expansion", "core"}:
+            set_bucket = 4
+        elif set_type in {"masters", "commander", "draft_innovation"}:
+            set_bucket = 3
+        elif set_type in {"promo", "box", "arsenal", "spellbook"}:
+            set_bucket = 1
+
+        if art_preference == "original":
+            return (0 if regular_modern else 1, -set_bucket, released_at)
+        if art_preference == "classic":
+            return (-frame_rank, 0 if not showcase_like else 1, -set_bucket, released_at)
+        if art_preference == "showcase":
+            return (1 if showcase_like else 0, 1 if bool(card.get("promo")) else 0, released_at, set_bucket)
+        if art_preference == "newest":
+            return (released_at, 1 if regular_modern else 0, set_bucket)
+        return (1 if regular_modern else 0, set_bucket, released_at)
+
+    def _get_print_candidates(self, card: Dict[str, Any]) -> List[Dict[str, Any]]:
+        oracle_id = str(card.get("oracle_id") or "").strip()
+        if not oracle_id:
+            return []
+        cache_key = f"scryfall:prints:{oracle_id}"
+        cached = self._cache_json_get(cache_key)
+        if isinstance(cached, list) and cached:
+            return [_as_payload(row) for row in cached]
+
+        prints_search_uri = str(card.get("prints_search_uri") or "").strip()
+        search_query = f'oracleid:{oracle_id} unique:prints game:paper'
+        candidates: List[Dict[str, Any]] = []
+        try:
+            with httpx.Client(timeout=20) as client:
+                next_url = prints_search_uri
+                while next_url:
+                    resp = client.get(next_url)
+                    if resp.status_code >= 400:
+                        break
+                    payload = resp.json()
+                    rows = payload.get("data", [])
+                    if isinstance(rows, list):
+                        candidates.extend(rows)
+                    if len(candidates) >= 80:
+                        break
+                    next_url = str(payload.get("next_page") or "").strip() if payload.get("has_more") else ""
+                if not candidates:
+                    resp = client.get(SEARCH_URL, params={"q": search_query, "unique": "prints"})
+                    if resp.status_code < 400:
+                        payload = resp.json()
+                        rows = payload.get("data", [])
+                        if isinstance(rows, list):
+                            candidates.extend(rows)
+        except Exception:
+            candidates = []
+
+        trimmed = [{k: row.get(k) for k in CARD_FIELDS + ["games"]} for row in candidates]
+        if trimmed:
+            self._cache_json_set(cache_key, trimmed, ttl_seconds=7 * 86400)
+        return trimmed
+
+    def _preferred_non_ub_display_card(self, card: Dict[str, Any], art_preference: str = "clean") -> Dict[str, Any]:
+        if not card:
+            return {}
+        art_preference = _normalize_art_preference(art_preference)
+        set_type = str(card.get("set_type") or "").strip().lower()
+        candidates = self._get_print_candidates(card)
+        if not candidates:
+            if not set_type or set_type not in UNIVERSES_BEYOND_SET_TYPES:
+                return card
+
+        viable = [
+            candidate
+            for candidate in candidates
+            if str(candidate.get("set_type") or "").strip().lower() not in UNIVERSES_BEYOND_SET_TYPES
+            and self._has_display_payload(candidate)
+            and ("paper" in set(candidate.get("games") or []))
+        ]
+        if viable:
+            reverse = art_preference not in {"original", "classic"}
+            chosen = sorted(viable, key=lambda candidate: self._art_preference_sort_key(candidate, art_preference), reverse=reverse)[0]
+            return {k: chosen.get(k) for k in CARD_FIELDS}
+
+        fallback = {k: card.get(k) for k in CARD_FIELDS}
+        if not set_type or set_type not in UNIVERSES_BEYOND_SET_TYPES:
+            return fallback
+        fallback["image_uris"] = {}
+        fallback["card_faces"] = []
+        fallback["scryfall_uri"] = _scryfall_search_url(card.get("name") or "")
+        return fallback
+
     def get_cards_by_name(self, names: List[str]) -> Dict[str, Dict[str, Any]]:
         names = [n.strip() for n in names if n and n.strip()]
         if not names:
             return {}
         cached = self._get_cached_by_name(names)
-        stale = [n for n, card in cached.items() if not self._has_display_payload(card) or not self._has_sim_payload(card)]
+        stale = [
+            n
+            for n, card in cached.items()
+            if not self._has_display_payload(card)
+            or not self._has_sim_payload(card)
+            or card.get("set_type") is None
+            or card.get("frame") is None
+            or card.get("border_color") is None
+            or card.get("promo_types") is None
+        ]
         missing = [n for n in names if n not in cached]
         to_fetch = sorted(set(missing + stale))
         if to_fetch:
@@ -322,9 +503,10 @@ class CardDataService:
             cached.update(self._get_cached_by_name(to_fetch))
         return cached
 
-    def card_display(self, card: Dict[str, Any]) -> Dict[str, Any]:
-        image_uris = card.get("image_uris") or {}
-        faces = card.get("card_faces") or []
+    def card_display(self, card: Dict[str, Any], art_preference: str = "clean") -> Dict[str, Any]:
+        display_card = self._preferred_non_ub_display_card(card, art_preference=art_preference) or card or {}
+        image_uris = display_card.get("image_uris") or {}
+        faces = display_card.get("card_faces") or []
         face_images = []
         for face in faces:
             fu = face.get("image_uris") or {}
@@ -344,21 +526,23 @@ class CardDataService:
                 "art_crop": face_images[0].get("art_crop"),
             }
 
-        cardmarket_url = _cardmarket_card_url(card.get("name") or "")
+        card_name = display_card.get("name") or card.get("name") or ""
+        cardmarket_url = _cardmarket_card_url(card_name)
         return {
-            "name": card.get("name"),
+            "name": card_name,
             "small": image_uris.get("small"),
             "normal": image_uris.get("normal"),
             "art_crop": image_uris.get("art_crop"),
             "face_images": face_images,
-            "scryfall_uri": card.get("scryfall_uri"),
+            "scryfall_uri": display_card.get("scryfall_uri") or card.get("scryfall_uri") or _scryfall_search_url(card_name),
             "cardmarket_url": cardmarket_url,
-            "prices": card.get("prices") or {},
+            "prices": display_card.get("prices") or card.get("prices") or {},
+            "art_preference": _normalize_art_preference(art_preference),
         }
 
-    def get_display_by_names(self, names: List[str]) -> Dict[str, Dict[str, Any]]:
+    def get_display_by_names(self, names: List[str], art_preference: str = "clean") -> Dict[str, Dict[str, Any]]:
         card_map = self.get_cards_by_name(names)
-        return {name: self.card_display(card_map.get(name, {})) for name in names if name in card_map}
+        return {name: self.card_display(card_map.get(name, {}), art_preference=art_preference) for name in names if name in card_map}
 
     def _fetch_named_card(self, client: httpx.Client, name: str) -> Dict[str, Any] | None:
         candidates = [name]
@@ -383,6 +567,13 @@ class CardDataService:
                 except Exception:
                     continue
         return None
+
+    def fetch_random_card(self, query: str) -> Dict[str, Any]:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(RANDOM_URL, params={"q": query})
+            resp.raise_for_status()
+            payload = resp.json()
+        return {k: payload.get(k) for k in CARD_FIELDS + ["games"]}
 
     def fetch_collection_by_name(self, names: List[str]) -> List[Dict[str, Any]]:
         cards: List[Dict[str, Any]] = []
@@ -461,12 +652,11 @@ class CardDataService:
         cached = self._cache_json_get(cache_key)
         if isinstance(cached, list):
             return cached
-        url = "https://api.scryfall.com/cards/search"
         ci = (color_identity or "").upper()
         ci_filter = f"id<={ci}" if ci else "id:c"
         q = f"{query} {ci_filter} game:paper legal:commander"
         with httpx.Client(timeout=30) as client:
-            resp = client.get(url, params={"q": q, "order": "edhrec", "unique": "cards"})
+            resp = client.get(SEARCH_URL, params={"q": q, "order": "edhrec", "unique": "cards"})
             if resp.status_code >= 400:
                 return []
             data = resp.json().get("data", [])

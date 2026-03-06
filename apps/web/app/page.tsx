@@ -21,6 +21,7 @@ import { THEME_STORAGE_KEY, chartTheme, isThemeMode, resolveTheme, type Resolved
 const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const DEFAULT_API_BASE = "https://deck-check.onrender.com";
 const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
+const LOCAL_DRAFT_STORAGE_KEY = "deckcheck.local-draft.v1";
 
 function sanitizeApiBase(raw: string): string {
   const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
@@ -64,6 +65,40 @@ const TABS = [
 const TAG_ONLY_TABS = ["Role Breakdown", "Combos", "Rules Watchouts"] as const;
 
 const THEME_OPTIONS: ThemeMode[] = ["dark", "light", "system"];
+const ART_PREFERENCE_OPTIONS = [
+  {
+    value: "original",
+    label: "Original Printing",
+    description: "Best for nostalgia and card-history purists. Uses the earliest non-UB paper printing when possible.",
+  },
+  {
+    value: "classic",
+    label: "Classic Frame",
+    description: "Best for old-school aesthetics. Prefers old-border or older-frame printings when they exist.",
+  },
+  {
+    value: "clean",
+    label: "Clean Modern",
+    description: "Best for readability. Prefers modern regular-frame non-UB printings.",
+  },
+  {
+    value: "showcase",
+    label: "Showcase Art",
+    description: "Best for art-first players. Prefers borderless, full-art, and showcase treatments when available.",
+  },
+  {
+    value: "newest",
+    label: "Newest Printing",
+    description: "Best if you want the current look. Prefers the most recent non-UB paper printing.",
+  },
+] as const;
+type ArtPreference = (typeof ART_PREFERENCE_OPTIONS)[number]["value"];
+const DEFAULT_ART_PREFERENCE: ArtPreference = "clean";
+
+function normalizeArtPreference(value: unknown): ArtPreference {
+  const next = String(value || "").trim().toLowerCase();
+  return (ART_PREFERENCE_OPTIONS.find((option) => option.value === next)?.value || DEFAULT_ART_PREFERENCE) as ArtPreference;
+}
 
 function progressTone(meta: { tone?: "error"; percent: number; show: boolean }): "default" | "accent" | "success" | "danger" {
   if (meta.tone === "error") return "danger";
@@ -88,6 +123,7 @@ function decklistStatusMeta(
   const trimmed = (status || "").trim().toLowerCase();
   const mapped: Record<string, { percent: number; label: string; detail: string; show?: boolean; tone?: "error" }> = {
     idle: { percent: 0, label: "Idle", detail: "", show: false },
+    generating: { percent: 34, label: "Generating deck", detail: "Picking a random commander and building a legal deck shell." },
     importing: { percent: 18, label: "Importing deck", detail: "Fetching deck text from the pasted URL." },
     parsing: { percent: 52, label: "Parsing decklist", detail: "Reading sections, quantities, commander, and legality structure." },
     tagging: { percent: 84, label: "Building preview", detail: "Applying tags and preparing the deck preview table." },
@@ -122,6 +158,7 @@ function analysisStatusMeta(status: string): { show: boolean; percent: number; l
   const mapped: Record<string, { percent: number; label: string; detail: string; show?: boolean; tone?: "error" }> = {
     idle: { percent: 0, label: "Idle", detail: "", show: false },
     importing: { percent: 0, label: "Idle", detail: "", show: false },
+    generating: { percent: 0, label: "Idle", detail: "", show: false },
     parsing: { percent: 0, label: "Idle", detail: "", show: false },
     tagging: { percent: 0, label: "Idle", detail: "", show: false },
     "sim-queued": { percent: 12, label: "Queueing simulation", detail: "Preparing the goldfish job and waiting for a worker." },
@@ -522,6 +559,7 @@ export default function HomePage() {
   const [mulliganAggression, setMulliganAggression] = useState(50);
   const [commanderPriority, setCommanderPriority] = useState(50);
   const [budgetMaxUsd, setBudgetMaxUsd] = useState("");
+  const [artPreference, setArtPreference] = useState<ArtPreference>(DEFAULT_ART_PREFERENCE);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [detectedWincons, setDetectedWincons] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
@@ -551,6 +589,9 @@ export default function HomePage() {
   const [projectBusy, setProjectBusy] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [savedSignature, setSavedSignature] = useState("");
+  const [lastSavedAt, setLastSavedAt] = useState("");
+  const [localDraftSavedAt, setLocalDraftSavedAt] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
@@ -567,6 +608,7 @@ export default function HomePage() {
   const chartElementsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const visibleChartsRef = useRef<Record<string, boolean>>({});
   const activeRunRef = useRef(0);
+  const draftRestoredRef = useRef(false);
 
   const detailOpen = true;
 
@@ -758,6 +800,111 @@ export default function HomePage() {
       })
       .filter(Boolean);
   }, [analysis, rulesWatchoutsRes]);
+  const currentSettingsBundle = useMemo(
+    () => ({
+      bracket,
+      policy,
+      simRuns,
+      turnLimit,
+      tablePressure,
+      mulliganAggression,
+      commanderPriority,
+      budgetMaxUsd,
+      artPreference,
+      showAdvancedSettings,
+    }),
+    [bracket, policy, simRuns, turnLimit, tablePressure, mulliganAggression, commanderPriority, budgetMaxUsd, artPreference, showAdvancedSettings],
+  );
+  const selectedArtPreference = useMemo(
+    () => ART_PREFERENCE_OPTIONS.find((option) => option.value === artPreference) || ART_PREFERENCE_OPTIONS[2],
+    [artPreference],
+  );
+  const currentProjectSummary = useMemo(() => {
+    const legalityLabel =
+      parseRes?.errors?.length
+        ? String(parseRes.errors[0] || "Needs fixes")
+        : parseRes
+          ? "Legal"
+          : "Unvalidated";
+    const comboCatalog = analysis?.combo_intel || comboRes || {};
+    const medianWinTurn = simRes?.summary?.win_metrics?.median_win_turn;
+    return {
+      deck_name: analysis?.deck_name || projectName || commanderLabel || "Untitled Project",
+      commander_label: commanderLabel,
+      card_count: parsedCount,
+      auto_win_plans: detectedWincons,
+      color_identity: colorIdentity,
+      has_analysis: Boolean(analysis || simRes || guides),
+      legality: legalityLabel,
+      latest_status: status,
+      median_win_turn: typeof medianWinTurn === "number" ? medianWinTurn : null,
+      complete_combo_count: Number(comboCatalog?.matched_variants?.length || 0),
+      one_card_combo_count: Number(comboCatalog?.near_miss_variants?.length || 0),
+      rules_watchout_count: Number((analysis?.rules_watchouts || rulesWatchoutsRes || []).length || 0),
+    };
+  }, [
+    analysis,
+    comboRes,
+    commanderLabel,
+    detectedWincons,
+    colorIdentity,
+    guides,
+    parsedCount,
+    parseRes,
+    projectName,
+    rulesWatchoutsRes,
+    simRes,
+    status,
+  ]);
+  const currentSavedBundle = useMemo(
+    () => ({
+      settings: currentSettingsBundle,
+      parseRes,
+      tagRes,
+      simRes,
+      analysis,
+      guides,
+      comboRes,
+      rulesWatchoutsRes,
+      detectedWincons,
+      status,
+    }),
+    [analysis, comboRes, currentSettingsBundle, detectedWincons, guides, parseRes, rulesWatchoutsRes, simRes, status, tagRes],
+  );
+  const currentProjectSnapshot = useMemo(() => {
+    const derivedName = (projectName || analysis?.deck_name || commanderLabel || "Untitled Project").trim() || "Untitled Project";
+    return {
+      name: derivedName,
+      name_key: normalizeProjectNameKey(derivedName),
+      deck_name: analysis?.deck_name || derivedName,
+      commander_label: commanderLabel,
+      decklist_text: decklist,
+      bracket,
+      summary: currentProjectSummary,
+      saved_bundle: currentSavedBundle,
+    };
+  }, [analysis?.deck_name, bracket, commanderLabel, currentProjectSummary, currentSavedBundle, decklist, projectName]);
+  const currentProjectSignature = useMemo(() => JSON.stringify(currentProjectSnapshot), [currentProjectSnapshot]);
+  const hasMeaningfulDeckState = useMemo(
+    () =>
+      Boolean(
+        currentProjectId ||
+          projectName.trim() ||
+          parseRes ||
+          tagRes ||
+          simRes ||
+          analysis ||
+          guides ||
+          comboRes ||
+          rulesWatchoutsRes.length ||
+          (decklist.trim() && decklist.trim() !== SAMPLE.trim()),
+      ),
+    [analysis, comboRes, currentProjectId, decklist, guides, parseRes, projectName, rulesWatchoutsRes.length, simRes, tagRes],
+  );
+  const hasUnsavedChanges = useMemo(
+    () => Boolean(hasMeaningfulDeckState && (!savedSignature || savedSignature !== currentProjectSignature)),
+    [currentProjectSignature, hasMeaningfulDeckState, savedSignature],
+  );
   const selectedImportance = (analysis?.importance || []).find((x: any) => x.card === selectedCard);
   const selectedImpact = selectedCard ? (simRes?.summary?.card_impacts || {})[selectedCard] : null;
   const selectedDisplay = selectedCard ? cardDisplay(selectedCard) : {};
@@ -951,6 +1098,25 @@ export default function HomePage() {
     window.history.replaceState({}, "", url.toString());
   }
 
+  function clearLocalDraft() {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem(LOCAL_DRAFT_STORAGE_KEY);
+    setLocalDraftSavedAt("");
+    setAuthNotice("Local draft cleared.");
+  }
+
+  function projectSummaryPills(summary: any) {
+    const pills: string[] = [];
+    if (summary?.deck_name) pills.push(String(summary.deck_name));
+    if (summary?.legality) pills.push(String(summary.legality));
+    if (typeof summary?.median_win_turn === "number") pills.push(`Median win T${summary.median_win_turn}`);
+    if (Array.isArray(summary?.auto_win_plans) && summary.auto_win_plans.length) pills.push(summary.auto_win_plans.join(", "));
+    if (Number(summary?.complete_combo_count || 0) > 0) pills.push(`${summary.complete_combo_count} combo${Number(summary.complete_combo_count) === 1 ? "" : "s"}`);
+    if (Number(summary?.one_card_combo_count || 0) > 0) pills.push(`${summary.one_card_combo_count} one-away`);
+    if (summary?.latest_status === "done") pills.push("Analysis ready");
+    return pills.slice(0, 4);
+  }
+
   async function requestJson(path: string, init: RequestInit, stage: string): Promise<any> {
     let response: Response;
     try {
@@ -1013,9 +1179,10 @@ export default function HomePage() {
     return [...names];
   }
 
-  function applySavedBundle(project: any) {
+  function applySavedBundle(project: any, options?: { isLocalDraft?: boolean }) {
     const bundle = project?.saved_bundle || {};
-    setCurrentProjectId(project?.project_id ?? project?.id ?? null);
+    const nextArtPreference = normalizeArtPreference(bundle?.settings?.artPreference);
+    setCurrentProjectId(options?.isLocalDraft ? null : (project?.project_id ?? project?.id ?? null));
     setProjectName(project?.name || project?.deck_name || "");
     setDecklist(project?.decklist_text || "");
     setBracket(Number(project?.bracket ?? bundle?.settings?.bracket ?? 3));
@@ -1026,6 +1193,7 @@ export default function HomePage() {
     setMulliganAggression(Number(bundle?.settings?.mulliganAggression ?? 50));
     setCommanderPriority(Number(bundle?.settings?.commanderPriority ?? 50));
     setBudgetMaxUsd(String(bundle?.settings?.budgetMaxUsd ?? ""));
+    setArtPreference(nextArtPreference);
     setShowAdvancedSettings(Boolean(bundle?.settings?.showAdvancedSettings ?? false));
     setParseRes(bundle?.parseRes || null);
     setTagRes(bundle?.tagRes || null);
@@ -1035,16 +1203,31 @@ export default function HomePage() {
     setComboRes(bundle?.comboRes || null);
     setRulesWatchoutsRes(bundle?.rulesWatchoutsRes || []);
     setDetectedWincons(bundle?.detectedWincons || []);
-    setDisplayMap(bundle?.tagRes?.card_display || {});
+    setDisplayMap({});
     setDecklistPanelView("Decklist");
     setSelectedCard(null);
     setStatus(bundle?.status || (bundle?.analysis || bundle?.simRes || bundle?.guides ? "done" : bundle?.tagRes ? "done" : "idle"));
+    const persistedSnapshot = JSON.stringify({
+      name: project?.name || project?.deck_name || "",
+      name_key: project?.name_key || normalizeProjectNameKey(project?.name || project?.deck_name || ""),
+      deck_name: project?.deck_name || project?.name || "",
+      commander_label: project?.commander_label || "",
+      decklist_text: project?.decklist_text || "",
+      bracket: Number(project?.bracket ?? bundle?.settings?.bracket ?? 3),
+      summary: project?.summary || {},
+      saved_bundle: bundle,
+    });
+    setSavedSignature(persistedSnapshot);
+    setLastSavedAt(String(project?.updated_at || project?.created_at || project?.local_saved_at || ""));
+    if (options?.isLocalDraft) {
+      setLocalDraftSavedAt(String(project?.local_saved_at || ""));
+    }
     const hasAnalysis = Boolean(bundle?.analysis || bundle?.simRes || bundle?.guides);
     const hasTag = Boolean(bundle?.tagRes);
     setTab(hasAnalysis ? "Deck Analysis" : hasTag ? "Role Breakdown" : "Deck Analysis");
     setMobilePane(hasAnalysis || hasTag ? "views" : "deck");
     const hydrateNames = collectBundleCardNames(bundle);
-    if (hydrateNames.length) void hydrateDisplay(hydrateNames);
+    if (hydrateNames.length) void hydrateDisplay(hydrateNames, nextArtPreference, true);
   }
 
   async function refreshProjects(nextUser = authUser) {
@@ -1081,6 +1264,7 @@ export default function HomePage() {
       setResetToken("");
       setAuthChecked(true);
       await refreshProjects(payload.user || null);
+      setAuthNotice(action === "login" ? "Logged in." : "Account created.");
     } catch (err: any) {
       setAuthError(normalizeUiError(err, action === "login" ? "Login failed." : "Account creation failed."));
     } finally {
@@ -1102,6 +1286,8 @@ export default function HomePage() {
       setExpandedProjectId(null);
       persistCsrfToken("");
       setAuthChecked(true);
+      setSavedSignature("");
+      setLastSavedAt("");
     } catch (err: any) {
       setAuthError(normalizeUiError(err, "Logout failed."));
     } finally {
@@ -1178,56 +1364,23 @@ export default function HomePage() {
       setAuthNotice("");
     }
     try {
-      const derivedName = (projectName || analysis?.deck_name || commanderLabel || "Untitled Project").trim() || "Untitled Project";
-      const matchingProject = projects.find((project: any) => project?.name_key === normalizeProjectNameKey(derivedName));
+      const snapshot = currentProjectSnapshot;
+      const derivedName = snapshot.name;
+      const matchingProject = projects.find((project: any) => project?.name_key === snapshot.name_key);
       const targetProjectId = currentProjectId || matchingProject?.id || null;
       const payload = await requestJson(
         targetProjectId ? `/api/projects/${targetProjectId}` : "/api/projects",
         {
           method: targetProjectId ? "PUT" : "POST",
           headers: authHeaders(),
-          body: JSON.stringify({
-            name: derivedName,
-            deck_name: analysis?.deck_name || derivedName,
-            commander_label: commanderLabel,
-            decklist_text: decklist,
-            bracket,
-            summary: {
-              deck_name: analysis?.deck_name || derivedName,
-              commander_label: commanderLabel,
-              card_count: parsedCount,
-              auto_win_plans: detectedWincons,
-              color_identity: colorIdentity,
-              has_analysis: Boolean(analysis || simRes || guides),
-            },
-            saved_bundle: {
-              settings: {
-                bracket,
-                policy,
-                simRuns,
-                turnLimit,
-                tablePressure,
-                mulliganAggression,
-                commanderPriority,
-                budgetMaxUsd,
-                showAdvancedSettings,
-              },
-              parseRes,
-              tagRes,
-              simRes,
-              analysis,
-              guides,
-              comboRes,
-              rulesWatchoutsRes,
-              detectedWincons,
-              status,
-            },
-          }),
+          body: JSON.stringify(snapshot),
         },
         targetProjectId ? "Project update" : "Project save",
       );
       setCurrentProjectId(payload.id);
       setProjectName(payload.name || derivedName);
+      setSavedSignature(JSON.stringify(snapshot));
+      setLastSavedAt(String(payload.updated_at || payload.created_at || new Date().toISOString()));
       setExpandedProjectId(payload.id);
       await refreshProjects();
       const versionsPayload = await requestJson(`/api/projects/${payload.id}/versions`, { method: "GET" }, "Project version history");
@@ -1235,19 +1388,6 @@ export default function HomePage() {
       if (!options?.silent) setAuthNotice(targetProjectId ? "Saved as a new version." : "Saved.");
     } catch (err: any) {
       if (!options?.silent) setAuthError(normalizeUiError(err, "Saving the deck failed."));
-    } finally {
-      setProjectBusy(false);
-    }
-  }
-
-  async function loadProject(projectId: number) {
-    setProjectBusy(true);
-    setAuthError("");
-    try {
-      const payload = await requestJson(`/api/projects/${projectId}`, { method: "GET" }, "Project load");
-      applySavedBundle(payload);
-    } catch (err: any) {
-      setAuthError(normalizeUiError(err, "Loading the saved deck failed."));
     } finally {
       setProjectBusy(false);
     }
@@ -1271,12 +1411,27 @@ export default function HomePage() {
     }
   }
 
+  async function loadLatestProject(projectId: number) {
+    setProjectBusy(true);
+    setAuthError("");
+    try {
+      const payload = await requestJson(`/api/projects/${projectId}`, { method: "GET" }, "Project load");
+      applySavedBundle(payload);
+      setAuthNotice(`Loaded ${payload.name || payload.deck_name}.`);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Loading the saved deck failed."));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
   async function loadProjectVersion(projectId: number, versionId: number) {
     setProjectBusy(true);
     setAuthError("");
     try {
       const payload = await requestJson(`/api/projects/${projectId}/versions/${versionId}`, { method: "GET" }, "Project version load");
       applySavedBundle(payload);
+      setAuthNotice(`Loaded version ${payload.version_number}.`);
     } catch (err: any) {
       setAuthError(normalizeUiError(err, "Loading the saved deck version failed."));
     } finally {
@@ -1520,6 +1675,21 @@ export default function HomePage() {
     setStatus(next);
   }
 
+  function clearRunResources() {
+    setParseRes(null);
+    setTagRes(null);
+    setSimRes(null);
+    setAnalysis(null);
+    setGuides(null);
+    setComboRes(null);
+    setRulesWatchoutsRes([]);
+    setDisplayMap({});
+    setDetectedWincons([]);
+    setSelectedCard(null);
+    setStrictlyBetter([]);
+    setDecklistPanelView("Decklist");
+  }
+
   function setAdvancedMode(next: boolean) {
     setShowAdvancedSettings(next);
     if (!next) {
@@ -1531,12 +1701,17 @@ export default function HomePage() {
     }
   }
 
-  async function hydrateDisplay(names: string[]) {
-    const toFetch = names.filter((n) => n && !displayMap[n]);
+  async function hydrateDisplay(names: string[], preferenceOverride?: ArtPreference, force = false) {
+    const nextPreference = normalizeArtPreference(preferenceOverride || artPreference);
+    const uniqueNames = Array.from(new Set((names || []).filter((n) => typeof n === "string" && n.trim().length > 0)));
+    const toFetch = force ? uniqueNames : uniqueNames.filter((n) => n && !displayMap[n]);
     if (!toFetch.length) return;
     try {
-      const q = encodeURIComponent(toFetch.join(","));
-      const res = await fetch(apiUrl(`/api/cards/display?names=${q}`));
+      const params = new URLSearchParams({
+        names: toFetch.join(","),
+        art_preference: nextPreference,
+      });
+      const res = await fetch(apiUrl(`/api/cards/display?${params.toString()}`));
       if (!res.ok) return;
       const payload = await res.json();
       setDisplayMap((prev) => ({ ...prev, ...(payload.cards || {}) }));
@@ -1602,6 +1777,7 @@ export default function HomePage() {
         },
         "Deck URL import",
       );
+      clearRunResources();
       setDecklist(payload.decklist_text);
       setMoxfieldUrl("");
       if (payload.warnings?.length) {
@@ -1616,6 +1792,37 @@ export default function HomePage() {
       setUrlImportNotice({
         tone: "error",
         text: normalizeUiError(err, "URL import failed. Paste text export instead."),
+      });
+    } finally {
+      updateStatus("idle");
+    }
+  }
+
+  async function generateRandomDeck() {
+    try {
+      updateStatus("generating");
+      setUrlImportNotice(null);
+      const payload = await requestJson(
+        "/api/decks/random",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bracket }),
+        },
+        "Random deck generation",
+      );
+      clearRunResources();
+      setProjectName("");
+      setDecklist(String(payload.decklist_text || ""));
+      setMobilePane("deck");
+      setUrlImportNotice({
+        tone: "info",
+        text: `Generated a legal ${payload.color_identity?.join("") || "colorless"} deck for ${payload.commander}. ${payload.interaction_count || 0} cheap interaction slots included.`,
+      });
+    } catch (err: any) {
+      setUrlImportNotice({
+        tone: "error",
+        text: normalizeUiError(err, "Random deck generation failed."),
       });
     } finally {
       updateStatus("idle");
@@ -1639,13 +1846,19 @@ export default function HomePage() {
     updateStatus("tagging");
     const tagged = await requestJson(
       "/api/decks/tag",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, commanders: parsed.commanders || [], global_tags: true }),
-      },
-      "Deck tagging",
-    );
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cards: parsed.cards,
+            commander: parsed.commander,
+            commanders: parsed.commanders || [],
+            global_tags: true,
+            art_preference: artPreference,
+          }),
+        },
+        "Deck tagging",
+      );
     if (activeRunRef.current !== runId) return null;
     setTagRes(tagged);
     setDisplayMap(tagged.card_display || {});
@@ -1906,6 +2119,19 @@ export default function HomePage() {
   }, [selectedCard]);
 
   useEffect(() => {
+    const names = uniqueNonEmpty([
+      ...collectBundleCardNames(currentSavedBundle),
+      ...(analysis?.missing_roles || []).flatMap((row: any) => row?.cards || []),
+      ...strictlyBetter.map((row: any) => row?.card),
+      selectedCard,
+    ]);
+    if (!names.length) return;
+    setDisplayMap({});
+    void hydrateDisplay(names, artPreference, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artPreference]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -1927,6 +2153,48 @@ export default function HomePage() {
     media.addListener(syncTheme);
     return () => media.removeListener(syncTheme);
   }, []);
+
+  useEffect(() => {
+    if (!authChecked || draftRestoredRef.current || typeof window === "undefined") return;
+    draftRestoredRef.current = true;
+    try {
+      const raw = window.localStorage.getItem(LOCAL_DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed?.saved_bundle || !parsed?.decklist_text) return;
+      if (currentProjectId || hasMeaningfulDeckState) return;
+      applySavedBundle(parsed, { isLocalDraft: true });
+      setAuthNotice(`Recovered local draft from ${new Date(parsed.local_saved_at || Date.now()).toLocaleString()}.`);
+    } catch {
+      return;
+    }
+  }, [authChecked, currentProjectId, hasMeaningfulDeckState]);
+
+  useEffect(() => {
+    if (!authChecked || typeof window === "undefined") return;
+    if (!hasMeaningfulDeckState) {
+      window.localStorage.removeItem(LOCAL_DRAFT_STORAGE_KEY);
+      setLocalDraftSavedAt("");
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      try {
+        const nextSavedAt = new Date().toISOString();
+        window.localStorage.setItem(
+          LOCAL_DRAFT_STORAGE_KEY,
+          JSON.stringify({
+            ...currentProjectSnapshot,
+            id: currentProjectId,
+            local_saved_at: nextSavedAt,
+          }),
+        );
+        setLocalDraftSavedAt(nextSavedAt);
+      } catch {
+        return;
+      }
+    }, 450);
+    return () => window.clearTimeout(timeout);
+  }, [authChecked, currentProjectId, currentProjectSnapshot, hasMeaningfulDeckState]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -2151,23 +2419,43 @@ export default function HomePage() {
                 Rules/data refresh: {updatesMeta?.sources?.[0]?.last_fetched_at ? new Date(updatesMeta.sources[0].last_fetched_at).toLocaleString() : "not fetched yet"}
               </p>
             </div>
-            <div className="theme-toggle" role="group" aria-label="Theme mode">
-              {THEME_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={`theme-option ${themeMode === option ? "is-active" : ""}`}
-                  aria-pressed={themeMode === option}
-                  onClick={() => {
-                    if (typeof window !== "undefined") {
-                      window.localStorage.setItem(THEME_STORAGE_KEY, option);
-                    }
-                    applyThemeMode(option);
-                  }}
-                >
-                  {option === "system" ? "System" : option[0].toUpperCase() + option.slice(1)}
-                </button>
-              ))}
+          </div>
+
+          <div className="sidebar-group sidebar-pane">
+            <div className="sidebar-section-label">Display Settings</div>
+            <div className="stack">
+              <label>Theme</label>
+              <div className="theme-toggle" role="group" aria-label="Theme mode">
+                {THEME_OPTIONS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className={`theme-option ${themeMode === option ? "is-active" : ""}`}
+                    aria-pressed={themeMode === option}
+                    onClick={() => {
+                      if (typeof window !== "undefined") {
+                        window.localStorage.setItem(THEME_STORAGE_KEY, option);
+                      }
+                      applyThemeMode(option);
+                    }}
+                  >
+                    {option === "system" ? "System" : option[0].toUpperCase() + option.slice(1)}
+                  </button>
+                ))}
+              </div>
+
+              <label>Card art style</label>
+              <select className="select" value={artPreference} onChange={(e) => setArtPreference(normalizeArtPreference(e.target.value))}>
+                {ART_PREFERENCE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="control-help">
+                Five modes cover the main display tastes in Magic: nostalgia, classic frames, readability, art-first treatments, and recency.
+              </p>
+              <p className="control-help">{selectedArtPreference.description}</p>
             </div>
           </div>
 
@@ -2178,6 +2466,23 @@ export default function HomePage() {
                 <p className="control-help">Checking session…</p>
               ) : authUser ? (
                 <>
+                  <div className="sidebar-status-row">
+                    {currentProjectId ? (
+                      <span className="status-chip" data-tone={hasUnsavedChanges ? "warning" : "success"}>
+                        {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
+                      </span>
+                    ) : null}
+                    {lastSavedAt ? (
+                      <span className="status-chip" data-tone="accent">
+                        Last saved {new Date(lastSavedAt).toLocaleDateString()}
+                      </span>
+                    ) : null}
+                    {localDraftSavedAt ? (
+                      <span className="status-chip" data-tone="accent">
+                        Local backup
+                      </span>
+                    ) : null}
+                  </div>
                   <p className="control-help">Signed in as <strong>{authUser.email}</strong></p>
                   <label>Saved deck name</label>
                   <input
@@ -2187,30 +2492,48 @@ export default function HomePage() {
                     placeholder={analysis?.deck_name || commanderLabel || "Untitled Project"}
                   />
                   <div className="sidebar-inline-actions">
-                    <button className="btn" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy}>
-                      {projectBusy ? "Saving..." : currentProjectId ? "Update save" : "Save current deck"}
+                    <button className="btn" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy || !hasMeaningfulDeckState || Boolean(currentProjectId && !hasUnsavedChanges)}>
+                      {projectBusy ? "Saving..." : currentProjectId ? (hasUnsavedChanges ? "Save new version" : "Already saved") : "Save current deck"}
+                    </button>
+                    <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>
+                      Clear local draft
                     </button>
                     <button className="btn" onClick={handleLogout} disabled={authBusy}>
                       Sign out
                     </button>
                   </div>
-                  <p className="control-help">Saved projects keep the decklist, settings, and the latest available analysis bundle.</p>
+                  <p className="control-help">Saved decks keep the decklist, settings, and the latest tagged/analyzed state. Re-saving the same deck name appends a version snapshot.</p>
                   <div className="saved-projects-list">
                     {(projects || []).map((project: any) => (
                       <div key={project.id} className="saved-project-row">
-                        <button className="saved-project-main" onClick={() => toggleProjectVersions(project.id)} disabled={projectBusy}>
-                          <strong>{project.name || project.deck_name}</strong>
-                          <span>{project.commander_label || project.deck_name}</span>
-                          <span>{new Date(project.updated_at).toLocaleString()} · {project.version_count || 1} version{Number(project.version_count || 1) === 1 ? "" : "s"}</span>
-                        </button>
-                        <button
-                          className="btn saved-project-delete"
-                          onClick={() => deleteProject(project.id)}
-                          disabled={projectBusy}
-                          aria-label={`Delete ${project.name || project.deck_name}`}
-                        >
-                          Delete
-                        </button>
+                        <div className="saved-project-row-header">
+                          <button className="saved-project-main" onClick={() => loadLatestProject(project.id)} disabled={projectBusy}>
+                            <strong>{project.name || project.deck_name}</strong>
+                            <span>{project.commander_label || project.deck_name}</span>
+                            <span>{new Date(project.updated_at).toLocaleString()} · {project.version_count || 1} version{Number(project.version_count || 1) === 1 ? "" : "s"}</span>
+                          </button>
+                          <div className="saved-project-actions">
+                            <button className="btn saved-project-history" onClick={() => toggleProjectVersions(project.id)} disabled={projectBusy}>
+                              {expandedProjectId === project.id ? "Hide history" : "History"}
+                            </button>
+                            <button
+                              className="btn saved-project-delete"
+                              onClick={() => deleteProject(project.id)}
+                              disabled={projectBusy}
+                              aria-label={`Delete ${project.name || project.deck_name}`}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                        <div className="saved-project-pills">
+                          {projectSummaryPills(project.summary).map((pill) => (
+                            <span key={`${project.id}-${pill}`} className="saved-project-pill">
+                              {pill}
+                            </span>
+                          ))}
+                          {currentProjectId === project.id ? <span className="saved-project-pill is-current">Current</span> : null}
+                        </div>
                         {expandedProjectId === project.id ? (
                           <div className="saved-project-versions">
                             {(projectVersions[project.id] || []).map((version: any) => (
@@ -2222,6 +2545,7 @@ export default function HomePage() {
                               >
                                 <strong>Version {version.version_number}</strong>
                                 <span>{new Date(version.created_at).toLocaleString()}</span>
+                                <span>{projectSummaryPills(version.summary).join(" · ")}</span>
                               </button>
                             ))}
                             {!(projectVersions[project.id] || []).length ? <p className="control-help">No version snapshots yet.</p> : null}
@@ -2255,7 +2579,11 @@ export default function HomePage() {
                         <button className="btn" onClick={() => handleAuth("register")} disabled={authBusy}>Create account</button>
                         <button className="btn" onClick={requestPasswordReset} disabled={authBusy}>Email reset link</button>
                       </div>
-                      <p className="control-help">Accounts let you save decklists together with their last tagged and analyzed state.</p>
+                      {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
+                      <div className="sidebar-inline-actions">
+                        <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>Clear local draft</button>
+                      </div>
+                      <p className="control-help">Accounts let you save decklists together with their last tagged and analyzed state. A local draft backup is kept on this device between visits.</p>
                     </>
                   )}
                 </>
@@ -2397,9 +2725,11 @@ export default function HomePage() {
           </div>
         </div>
         <div className="sidebar-footer">
-          <button className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={runTagOnly}>Tag Deck Only</button>
+          <button type="button" className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={generateRandomDeck}>Generate Random Deck</button>
+          <p className="control-help">Pick a random legal legendary-creature commander, build 38 lands, add 10-15 cheap instant-speed interaction, and fill the rest with commander-synergy cards.</p>
+          <button type="button" className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={runTagOnly}>Tag Deck Only</button>
           <p className="control-help">Parse, validate, tag, and open only the views that do not require simulation.</p>
-          <button className="btn btn-primary sidebar-run-btn" onClick={runPipeline}>Run Full Analysis</button>
+          <button type="button" className="btn btn-primary sidebar-run-btn" onClick={runPipeline}>Run Full Analysis</button>
           <p className="control-help">Fetch card data, goldfish results, and the full analysis stack.</p>
         </div>
 
@@ -2462,12 +2792,14 @@ export default function HomePage() {
             </div>
             <div className="decklist-mode-bar">
               <button
+                type="button"
                 className={`btn ${decklistPanelView === "Decklist" ? "active" : ""}`}
                 onClick={() => setDecklistPanelView("Decklist")}
               >
                 Decklist
               </button>
               <button
+                type="button"
                 className={`btn ${decklistPanelView === "Tagged Decklist" ? "active" : ""}`}
                 onClick={() => setDecklistPanelView("Tagged Decklist")}
                 disabled={!(tagRes?.tagged_lines || []).length}

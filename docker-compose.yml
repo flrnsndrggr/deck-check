@@ -32,7 +32,7 @@ services:
       FORCE_HTTPS: "0"
       AI_ENABLED: "0"
       OPENAI_API_KEY: ""
-      OPENAI_MODEL: gpt-4o-mini
+      OPENAI_MODEL: gpt-5.4
       AI_TIMEOUT_S: "6"
       AI_MAX_OUTPUT_TOKENS: "1200"
       AI_CACHE_TTL_S: "86400"
@@ -64,7 +64,7 @@ services:
       RULES_CACHE_DIR: /app/data/rules
       AI_ENABLED: "0"
       OPENAI_API_KEY: ""
-      OPENAI_MODEL: gpt-4o-mini
+      OPENAI_MODEL: gpt-5.4
       AI_TIMEOUT_S: "6"
       AI_MAX_OUTPUT_TOKENS: "1200"
       AI_CACHE_TTL_S: "86400"
@@ -93,7 +93,7 @@ services:
       RULES_CACHE_DIR: /app/data/rules
       AI_ENABLED: "0"
       OPENAI_API_KEY: ""
-      OPENAI_MODEL: gpt-4o-mini
+      OPENAI_MODEL: gpt-5.4
       AI_TIMEOUT_S: "6"
       AI_MAX_OUTPUT_TOKENS: "1200"
       AI_CACHE_TTL_S: "86400"

@@ -33,7 +33,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-4o-mini
+        value: gpt-5.4
       - key: AI_TIMEOUT_S
         value: "6"
       - key: AI_MAX_OUTPUT_TOKENS
@@ -92,7 +92,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-4o-mini
+        value: gpt-5.4
       - key: AI_TIMEOUT_S
         value: "6"
       - key: AI_MAX_OUTPUT_TOKENS
@@ -151,7 +151,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-4o-mini
+        value: gpt-5.4
       - key: AI_TIMEOUT_S
         value: "6"
       - key: AI_MAX_OUTPUT_TOKENS
