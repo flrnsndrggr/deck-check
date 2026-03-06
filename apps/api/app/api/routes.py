@@ -37,6 +37,7 @@ from app.schemas.deck import (
 from app.services.analyzer import analyze
 from app.services.commanderspellbook import ComboIntelService
 from app.services.guides import generate_guides
+from app.services.ai_enrichment import AIEnrichmentService
 from app.services.importer import UrlImportError, import_decklist_from_url
 from app.services.parser import parse_decklist
 from app.services.rules_index import search_rules
@@ -217,7 +218,7 @@ def get_sim(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/analyze")
-def analyze_deck(req: AnalyzeRequest):
+def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     card_map = CardDataService().get_cards_by_name([c.name for c in req.cards])
     commander_colors = list(card_map.get(req.commander or "", {}).get("color_identity") or [])
     commander_ci = "".join(commander_colors)
@@ -236,11 +237,21 @@ def analyze_deck(req: AnalyzeRequest):
         card_map=card_map,
     )
     watchouts = build_rules_watchouts(req.cards, req.commander)
+    enricher = AIEnrichmentService(db)
+    out = enricher.enrich_analysis(
+        cards=req.cards,
+        commander=req.commander,
+        analysis=out,
+        sim_summary=req.sim_summary,
+        watchouts=watchouts,
+        card_map=card_map,
+    )
+    final_watchouts = out.get("rules_watchouts", watchouts)
     notes = []
-    for w in watchouts[:8]:
+    for w in final_watchouts[:8]:
         flags = ", ".join(w.get("complexity_flags", [])[:3]) or "Oracle nuance"
         notes.append(f"{w.get('card')}: {flags}.")
-    out["rules_watchouts"] = watchouts
+    out["rules_watchouts"] = final_watchouts
     out["rules_interaction_notes"] = notes
     return out
 
@@ -251,8 +262,10 @@ def combo_intel(req: ComboIntelRequest):
 
 
 @router.post("/rules/watchouts")
-def rules_watchouts(req: RulesWatchoutRequest):
-    return {"watchouts": build_rules_watchouts(req.cards, req.commander)}
+def rules_watchouts(req: RulesWatchoutRequest, db: Session = Depends(get_db)):
+    watchouts = build_rules_watchouts(req.cards, req.commander)
+    watchouts = AIEnrichmentService(db).enrich_watchouts(cards=req.cards, commander=req.commander, watchouts=watchouts)
+    return {"watchouts": watchouts}
 
 
 @router.post("/cards/strictly-better", response_model=StrictlyBetterResponse)
@@ -273,8 +286,9 @@ def cards_display(names: str):
 
 
 @router.post("/guides/generate", response_model=GuideResponse)
-def generate(req: GuideRequest):
+def generate(req: GuideRequest, db: Session = Depends(get_db)):
     res = generate_guides(req.analyze.model_dump(), req.sim_summary)
+    res = AIEnrichmentService(db).enrich_guides(analyze=req.analyze.model_dump(), sim_summary=req.sim_summary, guides=res)
     return GuideResponse(**res)
 
 

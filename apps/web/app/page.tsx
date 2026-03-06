@@ -56,7 +56,7 @@ const TABS = [
   "Card Importance",
   "Optimization",
   "Primer",
-  "Diagnostic",
+  "Rules Watchouts",
 ] as const;
 
 function pipelineStatusMeta(status: string): { show: boolean; percent: number; label: string; detail: string; tone?: "error" } {
@@ -88,6 +88,89 @@ function pipelineStatusMeta(status: string): { show: boolean; percent: number; l
     };
   }
   return { show: false, percent: 0, label: "Idle", detail: "" };
+}
+
+const RULES_WATCHOUT_COPY: Record<string, { note: string; rules: string }> = {
+  "Replacement effect": {
+    note: "This card changes an event before it happens, so sequencing matters.",
+    rules:
+      "Replacement effects do not trigger and do not use the stack. They apply to the event they modify before that event happens, and if multiple replacement effects could apply, the affected player or object’s controller chooses the order.",
+  },
+  "Continuous condition": {
+    note: "Its effect turns on and off as the board state changes.",
+    rules:
+      "Conditional static abilities are checked continuously. If the condition stops being true, the effect stops applying immediately without using the stack.",
+  },
+  "Conditional replacement": {
+    note: "Its replacement text only works while a stated condition is true.",
+    rules:
+      "Check the condition at the exact moment the event would happen. If the condition is not true then, the replacement does nothing.",
+  },
+  "Triggered timing": {
+    note: "Its value depends on hitting the correct trigger window.",
+    rules:
+      "Triggered abilities fire after their event, then wait to be put on the stack the next time a player would get priority. Attack, upkeep, dies, and enters-the-battlefield triggers each have different timing windows.",
+  },
+  "Mode selection": {
+    note: "Choices are locked in while casting or activating, not later.",
+    rules:
+      "Modes are chosen as the spell or ability is put on the stack. You do not wait until resolution to decide them, and illegal modes cannot be chosen.",
+  },
+  "Additional casting costs": {
+    note: "Extra costs must be paid during casting, not after the spell resolves.",
+    rules:
+      "Additional costs are part of casting the spell. They are paid up front and still matter even if the spell is later countered.",
+  },
+  "Stack interaction": {
+    note: "This card depends on priority windows and target legality.",
+    rules:
+      "When using stack interaction, track when players receive priority and whether the spell or ability still has legal targets when it resolves.",
+  },
+  "Alternate zone casting": {
+    note: "Casting from another zone changes timing and resource assumptions.",
+    rules:
+      "Permission to cast from graveyard, exile, or another zone does not bypass normal timing unless the card explicitly says so. Extra costs and restrictions still apply.",
+  },
+};
+
+function uniqueNonEmpty(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const text = String(raw || "").trim();
+    if (!text) continue;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
+function InlinePanelProgress({
+  label,
+  percent,
+  detail,
+  tone,
+  ariaLabel,
+}: {
+  label: string;
+  percent: number;
+  detail: string;
+  tone?: "error";
+  ariaLabel: string;
+}) {
+  return (
+    <div className="panel-progress-inline" title={detail} aria-label={ariaLabel}>
+      <span className="panel-progress-label">{label}</span>
+      <div className="panel-progress-track" aria-hidden="true">
+        <div
+          className={`panel-progress-fill ${tone === "error" ? "is-error" : ""}`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <span className="panel-progress-percent">{percent}%</span>
+    </div>
+  );
 }
 
 const METRIC_HELP: Record<
@@ -466,6 +549,39 @@ export default function HomePage() {
   const colorIdentity = colorProfile?.color_identity || parseRes?.color_identity || tagRes?.color_identity || [];
   const colorIdentitySize = Number(colorProfile?.color_identity_size ?? parseRes?.color_identity_size ?? tagRes?.color_identity_size ?? 0);
   const progressMeta = useMemo(() => pipelineStatusMeta(status), [status]);
+  const rulesWatchoutRows = useMemo(() => {
+    return (analysis?.rules_watchouts || [])
+      .map((w: any) => {
+        const flags = Array.isArray(w?.complexity_flags) ? w.complexity_flags : [];
+        const fallbackErrata = uniqueNonEmpty(
+          (w?.rulings || []).map((r: any) => {
+            const comment = String(r?.comment || "").trim();
+            if (!comment) return null;
+            const published = String(r?.published_at || "").trim();
+            return published ? `${published}: ${comment}` : comment;
+          }),
+        );
+        const errata = uniqueNonEmpty(Array.isArray(w?.errata) ? w.errata : fallbackErrata);
+        const notes = uniqueNonEmpty(Array.isArray(w?.notes) ? w.notes : flags.map((flag: string) => RULES_WATCHOUT_COPY[flag]?.note || null));
+        const rulesInfo = uniqueNonEmpty(
+          Array.isArray(w?.rules_information)
+            ? w.rules_information
+            : Array.isArray(w?.rulesInfo)
+              ? w.rulesInfo
+              : flags.map((flag: string) => RULES_WATCHOUT_COPY[flag]?.rules || null),
+        );
+        if (!errata.length && !notes.length && !rulesInfo.length) {
+          return null;
+        }
+        return {
+          ...w,
+          errata,
+          notes,
+          rulesInfo,
+        };
+      })
+      .filter(Boolean);
+  }, [analysis]);
   const selectedImportance = (analysis?.importance || []).find((x: any) => x.card === selectedCard);
   const selectedImpact = selectedCard ? (simRes?.summary?.card_impacts || {})[selectedCard] : null;
   const selectedDisplay = selectedCard ? cardDisplay(selectedCard) : {};
@@ -1320,7 +1436,18 @@ export default function HomePage() {
 
       <section className="ui-detail">
         <div className="stack">
-          <h3>Decklist</h3>
+          <div className="panel-title-row">
+            <h3>Decklist</h3>
+            {progressMeta.show ? (
+              <InlinePanelProgress
+                label={progressMeta.label}
+                percent={progressMeta.percent}
+                detail={progressMeta.detail}
+                tone={progressMeta.tone}
+                ariaLabel={`Decklist processing progress: ${progressMeta.label}, ${progressMeta.percent}%`}
+              />
+            ) : null}
+          </div>
           <div className="block stack">
             <div className="kpi-grid">
               <div className="mini-card">
@@ -1349,22 +1476,6 @@ export default function HomePage() {
               </div>
             </div>
             <textarea className="textarea" value={decklist} onChange={(e) => setDecklist(e.target.value)} />
-
-            {progressMeta.show ? (
-              <div className="deck-progress">
-                <div className="deck-progress-head">
-                  <strong>{progressMeta.label}</strong>
-                  <span>{progressMeta.percent}%</span>
-                </div>
-                <div className="deck-progress-track" aria-hidden="true">
-                  <div
-                    className={`deck-progress-fill ${progressMeta.tone === "error" ? "is-error" : ""}`}
-                    style={{ width: `${progressMeta.percent}%` }}
-                  />
-                </div>
-                <p className="control-help">{progressMeta.detail}</p>
-              </div>
-            ) : null}
 
             {(tagRes?.cards || []).length > 0 && (
               <div>
@@ -1428,14 +1539,25 @@ export default function HomePage() {
 
       <main className={`ui-main ${selectedCard ? "insight-open" : ""}`}>
         <div className="outcome-shell">
-          <div className="outcome-content">
-        <div className="stack" style={{ marginBottom: 12 }}>
-          <h3>{hasOutcomeResources ? tab : "View Panel"}</h3>
-          <p className="muted">
-            {hasOutcomeResources
-              ? `Outcomes and findings for the selected run. Status: ${status}`
-              : "No view resources loaded yet. Run Full Analysis to fetch card data, simulation output, and derived reports for this panel."}
-          </p>
+        <div className="outcome-content">
+        <div className="stack outcome-header">
+          <div className="panel-title-row">
+            <h3>{hasOutcomeResources ? tab : "View Panel"}</h3>
+            {progressMeta.show ? (
+              <InlinePanelProgress
+                label={progressMeta.label}
+                percent={progressMeta.percent}
+                detail={progressMeta.detail}
+                tone={progressMeta.tone}
+                ariaLabel={`Analysis progress: ${progressMeta.label}, ${progressMeta.percent}%`}
+              />
+            ) : null}
+          </div>
+          {!hasOutcomeResources ? (
+            <p className="muted">
+              No view resources loaded yet. Run Full Analysis to fetch card data, simulation output, and derived reports for this panel.
+            </p>
+          ) : null}
           {hasOutcomeResources ? (
             <div className="tab-list" style={{ marginTop: 4, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
               {TABS.map((t) => (
@@ -1445,7 +1567,7 @@ export default function HomePage() {
           ) : null}
         </div>
 
-        <div className="block">
+        <div className="block outcome-body">
           {!hasOutcomeResources ? (
             <div className="resource-empty-state">
               <h2>Nothing to show yet</h2>
@@ -1924,58 +2046,58 @@ export default function HomePage() {
             </div>
           )}
 
-          {tab === "Diagnostic" && (
+          {tab === "Rules Watchouts" && (
             <div className="guide-rendered">
-              <h2>Diagnostic</h2>
-              <p className="muted">Operational and rules-risk diagnostics for this run.</p>
-
-              <h2>Oracle + Rulings Watchouts</h2>
-              <p className="muted">
-                These are cards with rule-dense wording, replacement/trigger complexity, or official rulings that frequently cause sequencing mistakes.
-              </p>
-              <div className="metric-help">
-                <div><strong>What this shows:</strong> Cards with higher rules complexity and relevant official ruling notes.</div>
-                <div><strong>Good:</strong> You understand these interactions and can sequence them without losing value.</div>
-                <div><strong>Bad:</strong> Frequent mis-sequencing around replacement effects, trigger timing, or alternate casting costs.</div>
-                <div><strong>What to change:</strong> Review flagged cards before matches and practice their common timing patterns.</div>
-              </div>
-              <h2>Interaction Notes</h2>
-              <ul>
-                {(analysis?.rules_interaction_notes || []).slice(0, 8).map((n: string, i: number) => <li key={i}>{n}</li>)}
-              </ul>
-              <table className="table">
-                <thead>
-                  <tr><th>Card</th><th>Why this is tricky</th><th>Ruling notes</th></tr>
-                </thead>
-                <tbody>
-                  {(analysis?.rules_watchouts || []).map((w: any, i: number) => (
-                    <tr key={`${w.card}-${i}`}>
-                      <td>
-                        {renderCardChip(w.card, `watchout-${i}`, { width: 20, height: 28 })}
-                        {w.commander ? <div className="control-help">Commander</div> : null}
-                        <div className="control-help">
-                          <a href={w.scryfall_uri || "#"} target="_blank" rel="noreferrer">Oracle page</a>
+              <div className="rules-watchout-list">
+                {rulesWatchoutRows.map((w: any, i: number) => {
+                  const imageUrl = cardDisplay(w.card)?.normal || cardDisplay(w.card)?.small || "";
+                  return (
+                    <article className="rules-watchout-row" key={`${w.card}-${i}`}>
+                      <button type="button" className="rules-watchout-media" onClick={() => setSelectedCard(w.card)}>
+                        {imageUrl ? (
+                          <img src={imageUrl} alt={w.card} loading="lazy" />
+                        ) : (
+                          <div className="rules-watchout-placeholder" />
+                        )}
+                      </button>
+                      <div className="rules-watchout-body">
+                        <div className="rules-watchout-title-row">
+                          <h3 className="rules-watchout-title">{w.card}</h3>
+                          {w.commander ? <span className="card-preview-badge">Commander</span> : null}
                         </div>
-                      </td>
-                      <td>
-                        {(w.complexity_flags || []).length
-                          ? <ul>{(w.complexity_flags || []).map((f: string, j: number) => <li key={j}>{f}</li>)}</ul>
-                          : <span>Rule text nuance detected.</span>}
-                        {(w.rule_queries || []).length ? (
-                          <div className="control-help">Rules search keys: {(w.rule_queries || []).join("; ")}</div>
+
+                        {w.errata?.length ? (
+                          <div className="rules-watchout-section">
+                            <div className="rules-watchout-section-label">Errata</div>
+                            <ul className="list-compact">
+                              {w.errata.map((item: string, j: number) => <li key={`errata-${j}`}>{item}</li>)}
+                            </ul>
+                          </div>
                         ) : null}
-                        <div className="control-help">{w.oracle_watchout}</div>
-                      </td>
-                      <td>
-                        {(w.rulings || []).length
-                          ? <ul>{(w.rulings || []).slice(0, 2).map((r: any, j: number) => <li key={j}>{r.published_at}: {r.comment}</li>)}</ul>
-                          : <span className="muted">No extra rulings fetched.</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {(analysis?.rules_watchouts || []).length === 0 && <p>No major watchouts detected for this list.</p>}
+
+                        {w.notes?.length ? (
+                          <div className="rules-watchout-section">
+                            <div className="rules-watchout-section-label">Notes</div>
+                            <ul className="list-compact">
+                              {w.notes.map((item: string, j: number) => <li key={`notes-${j}`}>{item}</li>)}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        {w.rulesInfo?.length ? (
+                          <div className="rules-watchout-section">
+                            <div className="rules-watchout-section-label">Rules information</div>
+                            <ul className="list-compact">
+                              {w.rulesInfo.map((item: string, j: number) => <li key={`rules-${j}`}>{item}</li>)}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {rulesWatchoutRows.length === 0 && <p>No major watchouts detected for this list.</p>}
             </div>
           )}
 

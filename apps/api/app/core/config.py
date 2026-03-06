@@ -17,6 +17,14 @@ class Settings(BaseModel):
     trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1,api")
     force_https: bool = os.getenv("FORCE_HTTPS", "0").lower() in {"1", "true", "yes", "on"}
     sim_inline_fallback_no_worker: bool = os.getenv("SIM_INLINE_FALLBACK_NO_WORKER", "1").lower() in {"1", "true", "yes", "on"}
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    ai_enabled: bool = os.getenv("AI_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+    ai_timeout_s: float = float(os.getenv("AI_TIMEOUT_S", "6.0"))
+    ai_max_output_tokens: int = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "1200"))
+    ai_cache_ttl_s: int = int(os.getenv("AI_CACHE_TTL_S", "86400"))
+    ai_hide_unverifiable: bool = os.getenv("AI_HIDE_UNVERIFIABLE", "1").lower() in {"1", "true", "yes", "on"}
+    ai_daily_budget_usd: float = float(os.getenv("AI_DAILY_BUDGET_USD", "0"))
 
 
 settings = Settings()

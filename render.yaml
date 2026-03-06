@@ -28,6 +28,22 @@ services:
         sync: false
       - key: FORCE_HTTPS
         value: "1"
+      - key: AI_ENABLED
+        value: "0"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: AI_TIMEOUT_S
+        value: "6"
+      - key: AI_MAX_OUTPUT_TOKENS
+        value: "1200"
+      - key: AI_CACHE_TTL_S
+        value: "86400"
+      - key: AI_HIDE_UNVERIFIABLE
+        value: "1"
+      - key: AI_DAILY_BUDGET_USD
+        value: "2.0"
 
   - type: worker
     name: deck-check-worker
@@ -49,6 +65,22 @@ services:
         value: /tmp/scryfall-oracle-cards.json
       - key: RULES_CACHE_DIR
         value: /tmp/rules
+      - key: AI_ENABLED
+        value: "0"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: AI_TIMEOUT_S
+        value: "6"
+      - key: AI_MAX_OUTPUT_TOKENS
+        value: "1200"
+      - key: AI_CACHE_TTL_S
+        value: "86400"
+      - key: AI_HIDE_UNVERIFIABLE
+        value: "1"
+      - key: AI_DAILY_BUDGET_USD
+        value: "2.0"
 
   - type: cron
     name: deck-check-scheduler
@@ -70,3 +102,19 @@ services:
         value: /tmp/scryfall-oracle-cards.json
       - key: RULES_CACHE_DIR
         value: /tmp/rules
+      - key: AI_ENABLED
+        value: "0"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: AI_TIMEOUT_S
+        value: "6"
+      - key: AI_MAX_OUTPUT_TOKENS
+        value: "1200"
+      - key: AI_CACHE_TTL_S
+        value: "86400"
+      - key: AI_HIDE_UNVERIFIABLE
+        value: "1"
+      - key: AI_DAILY_BUDGET_USD
+        value: "2.0"
