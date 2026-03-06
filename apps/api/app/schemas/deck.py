@@ -2,6 +2,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Literal
 
 
+ArtPreference = Literal["original", "classic", "clean", "showcase", "newest"]
+
+
 class DeckParseRequest(BaseModel):
     decklist_text: str
     bracket: int = Field(default=3, ge=1, le=5)
@@ -15,6 +18,18 @@ class DeckImportUrlRequest(BaseModel):
 class DeckImportUrlResponse(BaseModel):
     decklist_text: str
     source: str
+    warnings: List[str] = Field(default_factory=list)
+
+
+class RandomDeckRequest(BaseModel):
+    bracket: int = Field(default=3, ge=1, le=5)
+
+
+class RandomDeckResponse(BaseModel):
+    decklist_text: str
+    commander: str
+    color_identity: List[str] = Field(default_factory=list)
+    interaction_count: int = 0
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -43,6 +58,7 @@ class TagRequest(BaseModel):
     commander: Optional[str] = None
     commanders: List[str] = Field(default_factory=list)
     global_tags: bool = True
+    art_preference: ArtPreference = "clean"
 
 
 class TagResponse(BaseModel):

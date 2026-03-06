@@ -25,9 +25,12 @@ DEFAULT_OUTPUT_COST_PER_1M = 4.0
 MODEL_PRICING_PER_1M = {
     # Source: official OpenAI pricing. Keep this conservative for budget gating.
     # https://openai.com/api/pricing/
-    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-pro": (15.00, 120.00),
+    "gpt-5": (1.25, 10.00),
     "gpt-4.1-mini": (0.40, 1.60),
     "gpt-5-mini": (0.25, 2.00),
+    "gpt-4o-mini": (0.15, 0.60),
 }
 CARD_NAME_RE = re.compile(r"`([^`]+)`")
 NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")

@@ -18,7 +18,7 @@ class Settings(BaseModel):
     force_https: bool = os.getenv("FORCE_HTTPS", "0").lower() in {"1", "true", "yes", "on"}
     sim_inline_fallback_no_worker: bool = os.getenv("SIM_INLINE_FALLBACK_NO_WORKER", "1").lower() in {"1", "true", "yes", "on"}
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.4")
     ai_enabled: bool = os.getenv("AI_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
     ai_timeout_s: float = float(os.getenv("AI_TIMEOUT_S", "6.0"))
     ai_max_output_tokens: int = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "1200"))

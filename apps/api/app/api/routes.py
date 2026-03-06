@@ -42,6 +42,8 @@ from app.schemas.deck import (
     DeckParseResponse,
     GuideRequest,
     GuideResponse,
+    RandomDeckRequest,
+    RandomDeckResponse,
     RulesSearchResponse,
     RulesWatchoutRequest,
     StrictlyBetterRequest,
@@ -89,6 +91,7 @@ from app.services.updates import update_all_data
 from app.services.validator import validate_deck
 from app.services.rules_watchouts import build_rules_watchouts
 from app.services.replacements import strictly_better_replacements
+from app.services.random_deck import RandomDeckService
 from app.services.winplans import enrich_sim_cards, infer_supported_wincons
 from app.workers.queue import redis_conn, sim_queue
 from app.workers.cache import get_cached_simulation
@@ -440,6 +443,15 @@ def import_deck_url(req: DeckImportUrlRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/decks/random", response_model=RandomDeckResponse)
+def random_deck(req: RandomDeckRequest):
+    try:
+        payload = RandomDeckService().generate(bracket=req.bracket)
+        return RandomDeckResponse(**payload)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/decks/parse", response_model=DeckParseResponse)
 def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
     parsed = parse_decklist(req.decklist_text)
@@ -464,7 +476,7 @@ def tag_deck(req: TagRequest):
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
     cards, archetypes, lines = tag_cards(req.cards, card_map, commander_names, use_global_prefix=req.global_tags)
     type_profile = compute_type_theme_profile(req.cards, card_map)
-    display = svc.get_display_by_names([c.name for c in req.cards])
+    display = svc.get_display_by_names([c.name for c in req.cards], art_preference=req.art_preference)
     commander_colors = combined_color_identity(card_map, commander_names)
     return TagResponse(
         tagged_lines=lines,
@@ -626,9 +638,9 @@ def strictly_better(req: StrictlyBetterRequest):
 
 
 @router.get("/cards/display")
-def cards_display(names: str):
+def cards_display(names: str, art_preference: str = "clean"):
     requested = [n.strip() for n in names.split(",") if n.strip()]
-    display = CardDataService().get_display_by_names(requested)
+    display = CardDataService().get_display_by_names(requested, art_preference=art_preference)
     return {"cards": display}
 
 
