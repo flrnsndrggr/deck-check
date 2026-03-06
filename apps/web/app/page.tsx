@@ -526,6 +526,7 @@ export default function HomePage() {
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [selectedCurveMv, setSelectedCurveMv] = useState<number | null>(null);
   const [decklistPanelView, setDecklistPanelView] = useState<"Decklist" | "Tagged Decklist">("Decklist");
+  const [mobilePane, setMobilePane] = useState<"controls" | "deck" | "views">("controls");
   const [updatesMeta, setUpdatesMeta] = useState<any>(null);
   const [integrationsMeta, setIntegrationsMeta] = useState<any>(null);
   const [strictlyBetter, setStrictlyBetter] = useState<any[]>([]);
@@ -1363,6 +1364,7 @@ export default function HomePage() {
       void hydrateDisplay([...comboCards, ...watchoutCards]);
 
       setTab("Role Breakdown");
+      setMobilePane("views");
       updateStatus("done");
     } catch (err: any) {
       updateStatus("failed");
@@ -1460,6 +1462,7 @@ export default function HomePage() {
       if (activeRunRef.current !== runId) return;
       setAnalysis(ana);
       setTab("Deck Analysis");
+      setMobilePane("views");
       updateStatus("analysis ready");
 
       const bracketCriteriaCards = (ana?.bracket_report?.criteria || [])
@@ -1669,6 +1672,12 @@ export default function HomePage() {
   }, [selectedCard, tagRes, parseRes?.commander, parseRes?.commanders, budgetMaxUsd]);
 
   useEffect(() => {
+    if (selectedCard) {
+      setMobilePane("views");
+    }
+  }, [selectedCard]);
+
+  useEffect(() => {
     void (async () => {
       try {
         const res = await fetch(apiUrl("/api/meta/updates"));
@@ -1695,7 +1704,33 @@ export default function HomePage() {
   const sidebarProgressMeta = analysisProgressMeta.show ? analysisProgressMeta : decklistProgressMeta;
 
   return (
-    <div className={`ui-shell ${detailOpen ? "detail-open" : ""}`}>
+    <div className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`}>
+      <div className="mobile-workspace-bar" role="tablist" aria-label="Workspace panels">
+        <button
+          type="button"
+          className={`btn mobile-workspace-btn ${mobilePane === "controls" ? "active" : ""}`}
+          aria-pressed={mobilePane === "controls"}
+          onClick={() => setMobilePane("controls")}
+        >
+          Controls
+        </button>
+        <button
+          type="button"
+          className={`btn mobile-workspace-btn ${mobilePane === "deck" ? "active" : ""}`}
+          aria-pressed={mobilePane === "deck"}
+          onClick={() => setMobilePane("deck")}
+        >
+          Deck
+        </button>
+        <button
+          type="button"
+          className={`btn mobile-workspace-btn ${mobilePane === "views" ? "active" : ""}`}
+          aria-pressed={mobilePane === "views"}
+          onClick={() => setMobilePane("views")}
+        >
+          Views
+        </button>
+      </div>
       <aside className="ui-sidebar">
         <div className="sidebar-scroll stack">
           <div className="block stack sidebar-brand" data-surface="1">
