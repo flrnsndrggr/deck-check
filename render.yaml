@@ -44,6 +44,28 @@ services:
         value: "1"
       - key: AI_DAILY_BUDGET_USD
         value: "2.0"
+      - key: AUTH_SESSION_TTL_DAYS
+        value: "30"
+      - key: AUTH_COOKIE_NAME
+        value: dc_session
+      - key: AUTH_COOKIE_SECURE
+        value: "1"
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_CSRF_HEADER
+        value: X-CSRF-Token
+      - key: AUTH_CSRF_STORAGE_KEY
+        value: deckcheck.csrf
+      - key: AUTH_RATE_LIMIT_ATTEMPTS
+        value: "10"
+      - key: AUTH_RATE_LIMIT_WINDOW_S
+        value: "900"
+      - key: AUTH_MAGIC_LINK_TTL_MINUTES
+        value: "30"
+      - key: AUTH_EMAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
 
   - type: worker
     name: deck-check-worker
@@ -81,6 +103,28 @@ services:
         value: "1"
       - key: AI_DAILY_BUDGET_USD
         value: "2.0"
+      - key: AUTH_SESSION_TTL_DAYS
+        value: "30"
+      - key: AUTH_COOKIE_NAME
+        value: dc_session
+      - key: AUTH_COOKIE_SECURE
+        value: "1"
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_CSRF_HEADER
+        value: X-CSRF-Token
+      - key: AUTH_CSRF_STORAGE_KEY
+        value: deckcheck.csrf
+      - key: AUTH_RATE_LIMIT_ATTEMPTS
+        value: "10"
+      - key: AUTH_RATE_LIMIT_WINDOW_S
+        value: "900"
+      - key: AUTH_MAGIC_LINK_TTL_MINUTES
+        value: "30"
+      - key: AUTH_EMAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
 
   - type: cron
     name: deck-check-scheduler
@@ -118,3 +162,25 @@ services:
         value: "1"
       - key: AI_DAILY_BUDGET_USD
         value: "2.0"
+      - key: AUTH_SESSION_TTL_DAYS
+        value: "30"
+      - key: AUTH_COOKIE_NAME
+        value: dc_session
+      - key: AUTH_COOKIE_SECURE
+        value: "1"
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_CSRF_HEADER
+        value: X-CSRF-Token
+      - key: AUTH_CSRF_STORAGE_KEY
+        value: deckcheck.csrf
+      - key: AUTH_RATE_LIMIT_ATTEMPTS
+        value: "10"
+      - key: AUTH_RATE_LIMIT_WINDOW_S
+        value: "900"
+      - key: AUTH_MAGIC_LINK_TTL_MINUTES
+        value: "30"
+      - key: AUTH_EMAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false

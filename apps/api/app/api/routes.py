@@ -5,15 +5,33 @@ from threading import Thread
 from queue import Queue as ThreadQueue, Empty as QueueEmpty
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 from rq import Worker
 
 from app.db.session import get_db
+from app.models.project import Project
+from app.models.project_version import ProjectVersion
+from app.models.password_reset_token import PasswordResetToken
+from app.models.user import User
 from app.models.data_source import DataSourceStatus
 from app.models.run_record import RunRecord
 from app.models.sim_job import SimJob
+from app.schemas.auth import (
+    AuthCredentialsRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PasswordResetResponse,
+    AuthSessionResponse,
+    ProjectListResponse,
+    ProjectResponse,
+    ProjectSaveRequest,
+    ProjectSummary,
+    ProjectVersionListResponse,
+    ProjectVersionResponse,
+    ProjectVersionSummary,
+)
 from app.schemas.deck import (
     AnalyzeRequest,
     ComboIntel,
@@ -34,10 +52,33 @@ from app.schemas.deck import (
     TagRequest,
     TagResponse,
 )
+from app.services.auth import (
+    auth_rate_limited,
+    clear_auth_failures,
+    clear_session_cookie,
+    create_session,
+    create_password_reset_token,
+    get_session_context,
+    get_valid_password_reset_token,
+    hash_password,
+    normalize_email,
+    normalize_project_name_key,
+    record_auth_failure,
+    record_reset_request,
+    require_csrf,
+    reset_rate_limited,
+    revoke_user_sessions,
+    session_payload,
+    set_session_cookie,
+    validate_email,
+    validate_password,
+    verify_password,
+)
 from app.services.analyzer import analyze
 from app.services.commander_utils import combined_color_identity, commander_display_name, commander_names_from_cards, primary_commander_name
 from app.services.commanderspellbook import ComboIntelService
 from app.services.guides import generate_guides
+from app.services.mail import send_password_reset_email
 from app.services.ai_enrichment import AIEnrichmentService
 from app.services.importer import UrlImportError, import_decklist_from_url
 from app.services.parser import parse_decklist
@@ -55,6 +96,65 @@ from app.workers.tasks import get_vector_backend_status, run_simulation_task
 from app.core.config import settings
 
 router = APIRouter(prefix="/api")
+
+
+def _project_summary(row: Project) -> ProjectSummary:
+    version_count = row.summary.get("version_count") if isinstance(row.summary, dict) else None
+    latest_version_number = row.summary.get("latest_version_number") if isinstance(row.summary, dict) else None
+    return ProjectSummary(
+        id=row.id,
+        name=row.name,
+        name_key=row.name_key,
+        deck_name=row.deck_name,
+        commander_label=row.commander_label,
+        bracket=row.bracket,
+        summary=row.summary or {},
+        version_count=int(version_count or 1),
+        latest_version_number=int(latest_version_number or 1),
+        updated_at=row.updated_at,
+        created_at=row.created_at,
+    )
+
+
+def _project_version_summary(row: ProjectVersion) -> ProjectVersionSummary:
+    return ProjectVersionSummary(
+        id=row.id,
+        project_id=row.project_id,
+        version_number=row.version_number,
+        name=row.name,
+        deck_name=row.deck_name,
+        commander_label=row.commander_label,
+        bracket=row.bracket,
+        summary=row.summary or {},
+        created_at=row.created_at,
+    )
+
+
+def _next_version_number(db: Session, project_id: int) -> int:
+    rows = db.execute(select(ProjectVersion.version_number).where(ProjectVersion.project_id == project_id)).scalars().all()
+    return (max(rows) if rows else 0) + 1
+
+
+def _record_project_version(db: Session, project: Project) -> ProjectVersion:
+    version_number = _next_version_number(db, project.id)
+    row = ProjectVersion(
+        project_id=project.id,
+        version_number=version_number,
+        name=project.name,
+        deck_name=project.deck_name,
+        commander_label=project.commander_label,
+        decklist_text=project.decklist_text,
+        bracket=project.bracket,
+        summary=project.summary or {},
+        saved_bundle=project.saved_bundle or {},
+    )
+    db.add(row)
+    db.flush()
+    summary = dict(project.summary or {})
+    summary["version_count"] = version_number
+    summary["latest_version_number"] = version_number
+    project.summary = summary
+    return row
 
 
 def _run_with_timeout(fn, timeout_s: float = 1.5):
@@ -101,6 +201,232 @@ def _has_live_workers(max_stale_seconds: int = 120) -> bool:
         if age_s <= max_stale_seconds:
             return True
     return False
+
+
+@router.get("/auth/session", response_model=AuthSessionResponse)
+def get_auth_session(request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request, allow_missing=True)
+    return AuthSessionResponse(**session_payload(ctx))
+
+
+@router.post("/auth/register", response_model=AuthSessionResponse)
+def register_auth(req: AuthCredentialsRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    email = validate_email(req.email)
+    password = validate_password(req.password)
+    if auth_rate_limited(email, request.client.host if request.client else None):
+        raise HTTPException(status_code=429, detail="Too many auth attempts. Try again later.")
+    existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+    user = User(email=email, password_hash=hash_password(password))
+    db.add(user)
+    db.flush()
+    session_row, raw_token = create_session(db, user, request)
+    db.commit()
+    set_session_cookie(response, raw_token)
+    return AuthSessionResponse(
+        authenticated=True,
+        user={"id": user.id, "email": user.email},
+        csrf_token=session_row.csrf_token,
+    )
+
+
+@router.post("/auth/login", response_model=AuthSessionResponse)
+def login_auth(req: AuthCredentialsRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    email = validate_email(req.email)
+    if auth_rate_limited(email, request.client.host if request.client else None):
+        raise HTTPException(status_code=429, detail="Too many auth attempts. Try again later.")
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if user is None or not verify_password(req.password, user.password_hash):
+        record_auth_failure(email, request.client.host if request.client else None)
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    clear_auth_failures(email, request.client.host if request.client else None)
+    user.last_login_at = datetime.now(timezone.utc)
+    session_row, raw_token = create_session(db, user, request)
+    db.commit()
+    set_session_cookie(response, raw_token)
+    return AuthSessionResponse(
+        authenticated=True,
+        user={"id": user.id, "email": user.email},
+        csrf_token=session_row.csrf_token,
+    )
+
+
+@router.post("/auth/logout", response_model=AuthSessionResponse)
+def logout_auth(request: Request, response: Response, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request, allow_missing=True)
+    if ctx:
+        require_csrf(request, ctx)
+        db.delete(ctx.session)
+        db.commit()
+    clear_session_cookie(response)
+    return AuthSessionResponse(authenticated=False, user=None, csrf_token=None)
+
+
+@router.post("/auth/password-reset/request", response_model=PasswordResetResponse)
+def request_password_reset(req: PasswordResetRequest, request: Request, db: Session = Depends(get_db)):
+    email = validate_email(req.email)
+    ip_address = request.client.host if request.client else None
+    if reset_rate_limited(email, ip_address):
+        raise HTTPException(status_code=429, detail="Too many reset requests. Try again later.")
+    record_reset_request(email, ip_address)
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    debug_magic_link = None
+    if user is not None:
+        existing = db.execute(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))).scalars().all()
+        for row in existing:
+            db.delete(row)
+        db.flush()
+        _row, _raw_token, magic_link = create_password_reset_token(db, user, request)
+        try:
+            debug_magic_link = send_password_reset_email(to_email=user.email, magic_link=magic_link)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        db.commit()
+    return PasswordResetResponse(
+        ok=True,
+        message="If that email exists, a one-time reset link has been sent.",
+        debug_magic_link=debug_magic_link,
+    )
+
+
+@router.post("/auth/password-reset/confirm", response_model=AuthSessionResponse)
+def confirm_password_reset(req: PasswordResetConfirmRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    password = validate_password(req.password)
+    token_row = get_valid_password_reset_token(db, req.token)
+    if token_row is None:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or expired.")
+    user = db.execute(select(User).where(User.id == token_row.user_id)).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or expired.")
+    token_row.used_at = datetime.now(timezone.utc)
+    other_tokens = db.execute(select(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.id != token_row.id)).scalars().all()
+    for row in other_tokens:
+        db.delete(row)
+    user.password_hash = hash_password(password)
+    user.last_login_at = datetime.now(timezone.utc)
+    revoke_user_sessions(db, user.id)
+    session_row, raw_token = create_session(db, user, request)
+    db.commit()
+    set_session_cookie(response, raw_token)
+    return AuthSessionResponse(
+        authenticated=True,
+        user={"id": user.id, "email": user.email},
+        csrf_token=session_row.csrf_token,
+    )
+
+
+@router.get("/projects", response_model=ProjectListResponse)
+def list_projects(request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    rows = db.execute(select(Project).where(Project.user_id == ctx.user.id).order_by(desc(Project.updated_at), desc(Project.id))).scalars().all()
+    return ProjectListResponse(projects=[_project_summary(row) for row in rows])
+
+
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+def get_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    row = db.execute(select(Project).where(Project.id == project_id, Project.user_id == ctx.user.id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return ProjectResponse(
+        **_project_summary(row).model_dump(),
+        decklist_text=row.decklist_text,
+        saved_bundle=row.saved_bundle or {},
+    )
+
+
+@router.get("/projects/{project_id}/versions", response_model=ProjectVersionListResponse)
+def list_project_versions(project_id: int, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    row = db.execute(select(Project).where(Project.id == project_id, Project.user_id == ctx.user.id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    versions = db.execute(
+        select(ProjectVersion)
+        .where(ProjectVersion.project_id == project_id)
+        .order_by(desc(ProjectVersion.version_number), desc(ProjectVersion.id))
+    ).scalars().all()
+    return ProjectVersionListResponse(versions=[_project_version_summary(v) for v in versions])
+
+
+@router.get("/projects/{project_id}/versions/{version_id}", response_model=ProjectVersionResponse)
+def get_project_version(project_id: int, version_id: int, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    project = db.execute(select(Project).where(Project.id == project_id, Project.user_id == ctx.user.id)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    row = db.execute(select(ProjectVersion).where(ProjectVersion.id == version_id, ProjectVersion.project_id == project_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project version not found.")
+    return ProjectVersionResponse(**_project_version_summary(row).model_dump(), decklist_text=row.decklist_text, saved_bundle=row.saved_bundle or {})
+
+
+@router.post("/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+def create_project(req: ProjectSaveRequest, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    require_csrf(request, ctx)
+    name = (req.name or req.deck_name or req.commander_label or "Untitled Project").strip()[:200] or "Untitled Project"
+    name_key = normalize_project_name_key(name)
+    deck_name = (req.deck_name or name).strip()[:200] or "Untitled Deck"
+    existing = db.execute(select(Project).where(Project.user_id == ctx.user.id, Project.name_key == name_key)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="A saved deck with that name already exists. Update it to create a new version.")
+    row = Project(
+        user_id=ctx.user.id,
+        name=name,
+        name_key=name_key,
+        deck_name=deck_name,
+        commander_label=(req.commander_label or "").strip()[:255] or None,
+        decklist_text=req.decklist_text,
+        bracket=req.bracket,
+        summary=req.summary or {},
+        saved_bundle=req.saved_bundle or {},
+    )
+    db.add(row)
+    db.flush()
+    _record_project_version(db, row)
+    db.commit()
+    db.refresh(row)
+    return ProjectResponse(**_project_summary(row).model_dump(), decklist_text=row.decklist_text, saved_bundle=row.saved_bundle or {})
+
+
+@router.put("/projects/{project_id}", response_model=ProjectResponse)
+def update_project(project_id: int, req: ProjectSaveRequest, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    require_csrf(request, ctx)
+    row = db.execute(select(Project).where(Project.id == project_id, Project.user_id == ctx.user.id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    next_name = (req.name or req.deck_name or req.commander_label or row.name or "Untitled Project").strip()[:200] or "Untitled Project"
+    next_name_key = normalize_project_name_key(next_name)
+    duplicate = db.execute(select(Project).where(Project.user_id == ctx.user.id, Project.name_key == next_name_key, Project.id != project_id)).scalar_one_or_none()
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="A saved deck with that name already exists.")
+    row.name = next_name
+    row.name_key = next_name_key
+    row.deck_name = (req.deck_name or row.deck_name or row.name).strip()[:200] or "Untitled Deck"
+    row.commander_label = (req.commander_label or "").strip()[:255] or None
+    row.decklist_text = req.decklist_text
+    row.bracket = req.bracket
+    row.summary = req.summary or {}
+    row.saved_bundle = req.saved_bundle or {}
+    _record_project_version(db, row)
+    db.commit()
+    db.refresh(row)
+    return ProjectResponse(**_project_summary(row).model_dump(), decklist_text=row.decklist_text, saved_bundle=row.saved_bundle or {})
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    ctx = get_session_context(db, request)
+    require_csrf(request, ctx)
+    row = db.execute(select(Project).where(Project.id == project_id, Project.user_id == ctx.user.id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/decks/import-url", response_model=DeckImportUrlResponse)
