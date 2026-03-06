@@ -1,7 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   LineChart,
   Line,
@@ -59,6 +58,37 @@ const TABS = [
   "Primer",
   "Diagnostic",
 ] as const;
+
+function pipelineStatusMeta(status: string): { show: boolean; percent: number; label: string; detail: string; tone?: "error" } {
+  const trimmed = (status || "").trim().toLowerCase();
+  const mapped: Record<string, { percent: number; label: string; detail: string; show?: boolean; tone?: "error" }> = {
+    idle: { percent: 0, label: "Idle", detail: "", show: false },
+    importing: { percent: 10, label: "Importing deck", detail: "Fetching deck text from the pasted URL." },
+    parsing: { percent: 22, label: "Parsing decklist", detail: "Reading sections, quantities, commander, and legality structure." },
+    tagging: { percent: 38, label: "Tagging cards", detail: "Applying role tags from card text, type lines, and commander context." },
+    "sim-queued": { percent: 50, label: "Queueing simulation", detail: "Preparing the goldfish job and waiting for a worker." },
+    "sim-started": { percent: 62, label: "Running simulation", detail: "Goldfishing the deck across many seeded runs." },
+    "sim-done": { percent: 72, label: "Simulation complete", detail: "Simulation finished. Preparing the analysis layer." },
+    analyzing: { percent: 86, label: "Analyzing results", detail: "Building deck diagnosis, recommendations, and graph payloads." },
+    "analysis ready": { percent: 94, label: "Core analysis ready", detail: "Main results are loaded. Final guide text may still be finishing." },
+    "building primer": { percent: 97, label: "Building primer", detail: "Generating the play primer and final narrative outputs." },
+    done: { percent: 100, label: "Complete", detail: "Deck analysis is fully loaded.", show: false },
+    failed: { percent: 100, label: "Run failed", detail: "The last run stopped before analysis completed.", show: false, tone: "error" },
+  };
+  if (mapped[trimmed]) {
+    const row = mapped[trimmed];
+    return { show: row.show ?? true, percent: row.percent, label: row.label, detail: row.detail, tone: row.tone };
+  }
+  if (trimmed.startsWith("sim-")) {
+    return {
+      show: true,
+      percent: 60,
+      label: "Running simulation",
+      detail: `Worker status: ${status.replace(/^sim-/, "")}.`,
+    };
+  }
+  return { show: false, percent: 0, label: "Idle", detail: "" };
+}
 
 const METRIC_HELP: Record<
   string,
@@ -343,6 +373,7 @@ export default function HomePage() {
   const [moxfieldUrl, setMoxfieldUrl] = useState("");
   const [urlImportNotice, setUrlImportNotice] = useState<UrlImportNotice>(null);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Deck Analysis");
+  const [deckAnalysisView, setDeckAnalysisView] = useState<"Overview" | "Combos">("Overview");
   const [bracket, setBracket] = useState(3);
   const [policy, setPolicy] = useState("auto");
   const [simRuns, setSimRuns] = useState(2000);
@@ -351,6 +382,7 @@ export default function HomePage() {
   const [mulliganAggression, setMulliganAggression] = useState(50);
   const [commanderPriority, setCommanderPriority] = useState(50);
   const [budgetMaxUsd, setBudgetMaxUsd] = useState("");
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [detectedWincons, setDetectedWincons] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
 
@@ -368,6 +400,11 @@ export default function HomePage() {
   const [strictlyBetterLoading, setStrictlyBetterLoading] = useState(false);
   const [expandedRoles, setExpandedRoles] = useState<Record<string, boolean>>({});
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [visibleCharts, setVisibleCharts] = useState<Record<string, boolean>>({});
+  const chartObserverRef = useRef<IntersectionObserver | null>(null);
+  const chartElementsRef = useRef<Record<string, HTMLDivElement | null>>({});
+  const visibleChartsRef = useRef<Record<string, boolean>>({});
+  const activeRunRef = useRef(0);
 
   const detailOpen = true;
 
@@ -400,10 +437,12 @@ export default function HomePage() {
   const topAdds = (analysis?.adds || []).slice(0, 3);
   const roleGaps = (analysis?.missing_roles || []).slice(0, 4);
   const bracketViolations = analysis?.bracket_report?.violations || [];
+  const hasOutcomeResources = Boolean(tagRes || simRes || analysis || guides);
   const winMetrics = simRes?.summary?.win_metrics || {};
   const uncertainty = simRes?.summary?.uncertainty || {};
   const fastestWins = simRes?.summary?.fastest_wins || [];
   const comboIntel = analysis?.combo_intel || {};
+  const comboComplete = comboIntel?.matched_variants || [];
   const comboNearMiss = comboIntel?.near_miss_variants || [];
   const intentSummary = analysis?.intent_summary || {};
   const graphPayloads = analysis?.graph_payloads || simRes?.summary?.graph_payloads || {};
@@ -426,6 +465,7 @@ export default function HomePage() {
   const colorProfile = analysis?.color_profile || {};
   const colorIdentity = colorProfile?.color_identity || parseRes?.color_identity || tagRes?.color_identity || [];
   const colorIdentitySize = Number(colorProfile?.color_identity_size ?? parseRes?.color_identity_size ?? tagRes?.color_identity_size ?? 0);
+  const progressMeta = useMemo(() => pipelineStatusMeta(status), [status]);
   const selectedImportance = (analysis?.importance || []).find((x: any) => x.card === selectedCard);
   const selectedImpact = selectedCard ? (simRes?.summary?.card_impacts || {})[selectedCard] : null;
   const selectedDisplay = selectedCard ? cardDisplay(selectedCard) : {};
@@ -622,7 +662,23 @@ export default function HomePage() {
     setExpandedRoles((prev) => ({ ...prev, [role]: !prev[role] }));
   }
 
-  function chartMotion(seriesIndex = 0) {
+  function chartViewportRef(chartKey: string) {
+    return (el: HTMLDivElement | null) => {
+      chartElementsRef.current[chartKey] = el;
+      if (!el) return;
+      el.dataset.chartKey = chartKey;
+      if (prefersReducedMotion || visibleChartsRef.current[chartKey]) return;
+      if (chartObserverRef.current) {
+        chartObserverRef.current.observe(el);
+      }
+    };
+  }
+
+  function isChartVisible(chartKey: string) {
+    return Boolean(visibleCharts.__all || visibleCharts[chartKey]);
+  }
+
+  function chartMotion(chartKey: string, seriesIndex = 0) {
     if (prefersReducedMotion) {
       return {
         isAnimationActive: false as const,
@@ -630,10 +686,11 @@ export default function HomePage() {
         animationBegin: 0,
       };
     }
+    const canAnimate = isChartVisible(chartKey);
     return {
-      isAnimationActive: true as const,
-      animationDuration: 720,
-      animationBegin: Math.min(seriesIndex * 90, 600),
+      isAnimationActive: canAnimate,
+      animationDuration: canAnimate ? 720 : 0,
+      animationBegin: canAnimate ? Math.min(seriesIndex * 90, 600) : 0,
       animationEasing: "ease-out" as const,
     };
   }
@@ -659,21 +716,60 @@ export default function HomePage() {
     return <p className="deck-blurb">{text}</p>;
   }
 
-  function renderCardChip(name: string, key: string) {
+  function renderCardChip(
+    name: string,
+    key: string,
+    options?: { label?: string; width?: number; height?: number; className?: string },
+  ) {
+    const width = options?.width ?? 24;
+    const height = options?.height ?? 34;
     return (
-      <button key={key} className="btn card-chip" onClick={() => setSelectedCard(name)}>
+      <button key={key} className={options?.className || "btn card-chip"} onClick={() => setSelectedCard(name)}>
         {cardThumb(name) ? (
-          <img src={cardThumb(name)} alt={name} width={24} height={34} loading="lazy" style={{ borderRadius: 4, border: "1px solid #ddd" }} />
+          <img src={cardThumb(name)} alt={name} width={width} height={height} loading="lazy" style={{ borderRadius: 4, border: "1px solid #ddd" }} />
         ) : (
-          <span style={{ width: 24, height: 34, display: "inline-block", borderRadius: 4, background: "#efefef", border: "1px solid #ddd" }} />
+          <span style={{ width, height, display: "inline-block", borderRadius: 4, background: "#efefef", border: "1px solid #ddd" }} />
         )}
-        <span>{name}</span>
+        <span>{options?.label || name}</span>
       </button>
+    );
+  }
+
+  function renderCardRow(
+    names: string[],
+    keyPrefix: string,
+    options?: { max?: number; emptyText?: string; labelMap?: Record<string, string> },
+  ) {
+    const items = (names || [])
+      .filter((n) => typeof n === "string" && n.trim().length > 0)
+      .slice(0, options?.max ?? (names || []).length);
+    if (!items.length) {
+      return <p className="muted">{options?.emptyText || "No cards available."}</p>;
+    }
+    return (
+      <div className="card-chip-row">
+        {items.map((name, i) =>
+          renderCardChip(name, `${keyPrefix}-${i}`, {
+            label: options?.labelMap?.[name] || name,
+          }),
+        )}
+      </div>
     );
   }
 
   function updateStatus(next: string) {
     setStatus(next);
+  }
+
+  function setAdvancedMode(next: boolean) {
+    setShowAdvancedSettings(next);
+    if (!next) {
+      setPolicy("auto");
+      setTurnLimit(8);
+      setTablePressure(30);
+      setMulliganAggression(50);
+      setCommanderPriority(50);
+    }
   }
 
   async function hydrateDisplay(names: string[]) {
@@ -705,17 +801,30 @@ export default function HomePage() {
 
   function inferWinconsFromTagged(tagPayload: any): string[] {
     const tags = new Set<string>();
+    let comboPieces = 0;
+    let tutors = 0;
+    let payoffCards = 0;
+    let winconCards = 0;
+    let voltronCards = 0;
+    let controlPieces = 0;
     for (const c of tagPayload?.cards || []) {
-      for (const t of c.tags || []) tags.add(String(t));
+      const cardTags = new Set<string>((c.tags || []).map((t: any) => String(t)));
+      for (const t of cardTags) tags.add(t);
+      if (cardTags.has("#Combo")) comboPieces += 1;
+      if (cardTags.has("#Tutor")) tutors += 1;
+      if (cardTags.has("#Payoff")) payoffCards += 1;
+      if (cardTags.has("#Wincon")) winconCards += 1;
+      if (cardTags.has("#Voltron")) voltronCards += 1;
+      if (cardTags.has("#Control") || cardTags.has("#Counter") || cardTags.has("#Stax")) controlPieces += 1;
     }
     const arch = tagPayload?.archetype_weights || {};
     const out: string[] = [];
 
-    if (tags.has("#Combo") || num(arch.combo) >= 0.55) out.push("Combo");
-    if (tags.has("#Voltron") || tags.has("#Wincon")) out.push("Commander Damage");
-    if (tags.has("#Control") || tags.has("#Counter") || num(arch.control) >= 0.55) out.push("Control Lock");
-    if (tags.has("#Wincon") && !out.includes("Combo")) out.push("Alt Win");
-    if (!out.length || tags.has("#Tokens") || tags.has("#Payoff")) out.push("Combat");
+    if (comboPieces >= 3 || (comboPieces >= 2 && tutors >= 1) || (comboPieces >= 2 && num(arch.combo) >= 0.65)) out.push("Combo");
+    if (voltronCards >= 2 || num(arch.voltron) >= 0.6) out.push("Commander Damage");
+    if (controlPieces >= 4 || num(arch.control) >= 0.6) out.push("Control Lock");
+    if (winconCards >= 2 && !out.includes("Combo") && !tags.has("#Voltron")) out.push("Alt Win");
+    if (!out.length || tags.has("#Tokens") || payoffCards >= 3 || tags.has("#Payoff")) out.push("Combat");
 
     return Array.from(new Set(out));
   }
@@ -755,7 +864,13 @@ export default function HomePage() {
   }
 
   async function runPipeline() {
+    const runId = activeRunRef.current + 1;
+    activeRunRef.current = runId;
     try {
+      setSimRes(null);
+      setAnalysis(null);
+      setGuides(null);
+      setSelectedCard(null);
       updateStatus("parsing");
       const parsed = await requestJson(
         "/api/decks/parse",
@@ -766,6 +881,7 @@ export default function HomePage() {
         },
         "Deck parse",
       );
+      if (activeRunRef.current !== runId) return;
       setParseRes(parsed);
 
       updateStatus("tagging");
@@ -778,6 +894,7 @@ export default function HomePage() {
         },
         "Deck tagging",
       );
+      if (activeRunRef.current !== runId) return;
       setTagRes(tagged);
       setDisplayMap(tagged.card_display || {});
       const inferredWincons = inferWinconsFromTagged(tagged);
@@ -807,6 +924,7 @@ export default function HomePage() {
         },
         "Simulation enqueue",
       );
+      if (activeRunRef.current !== runId) return;
 
       let simStatus = "queued";
       let simPayload: any = null;
@@ -821,6 +939,7 @@ export default function HomePage() {
           { method: "GET" },
           "Simulation status poll",
         );
+        if (activeRunRef.current !== runId) return;
         simStatus = polled.status;
         simPayload = polled.result;
         updateStatus(`sim-${simStatus}`);
@@ -829,7 +948,11 @@ export default function HomePage() {
         updateStatus("failed");
         throw new Error(simPayload?.error || "Simulation failed");
       }
+      if (activeRunRef.current !== runId) return;
       setSimRes(simPayload);
+      if (Array.isArray(simPayload?.summary?.selected_wincons) && simPayload.summary.selected_wincons.length) {
+        setDetectedWincons(simPayload.summary.selected_wincons);
+      }
 
       updateStatus("analyzing");
       const ana = await requestJson(
@@ -848,19 +971,12 @@ export default function HomePage() {
         },
         "Deck analysis",
       );
+      if (activeRunRef.current !== runId) return;
       setAnalysis(ana);
+      setTab("Deck Analysis");
+      setDeckAnalysisView("Overview");
+      updateStatus("analysis ready");
 
-      updateStatus("guides");
-      const gd = await requestJson(
-        "/api/guides/generate",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ analyze: ana, sim_summary: simPayload.summary }),
-        },
-        "Guide generation",
-      );
-      setGuides(gd);
       const bracketCriteriaCards = (ana?.bracket_report?.criteria || [])
         .flatMap((c: any) => (c?.cards || []).map((x: any) => x?.name))
         .filter((n: any) => typeof n === "string" && n.length > 0);
@@ -880,7 +996,22 @@ export default function HomePage() {
           ...(w?.turns || []).flatMap((t: any) => [t?.draw, t?.land, ...(t?.casts || [])]),
         ])
         .filter((n: any) => typeof n === "string" && n.length > 0);
-      await hydrateDisplay([
+      const intentCards = [
+        ...(ana?.intent_summary?.key_support_cards || []),
+        ...(ana?.intent_summary?.key_engine_cards || []),
+        ...(ana?.intent_summary?.main_wincon_cards || []),
+        ...(ana?.intent_summary?.key_interaction_cards || []),
+      ].filter((n: any) => typeof n === "string" && n.length > 0);
+      const comboLineCards = (ana?.intent_summary?.combo_lines || [])
+        .flatMap((line: any) => [...(line?.present_cards || []), ...(line?.missing_cards || [])])
+        .filter((n: any) => typeof n === "string" && n.length > 0);
+      const comboCatalogCards = [...(ana?.combo_intel?.matched_variants || [])]
+        .flatMap((line: any) => [...(line?.present_cards || []), ...(line?.missing_cards || [])])
+        .filter((n: any) => typeof n === "string" && n.length > 0);
+      const rulesWatchoutCards = (ana?.rules_watchouts || [])
+        .map((w: any) => w?.card)
+        .filter((n: any) => typeof n === "string" && n.length > 0);
+      void hydrateDisplay([
         ...(ana?.importance || []).slice(0, 20).map((x: any) => x.card),
         ...(ana?.adds || []).slice(0, 20).map((x: any) => x.card),
         ...(ana?.cuts || []).slice(0, 20).map((x: any) => x.card),
@@ -889,10 +1020,32 @@ export default function HomePage() {
         ...manabaseDemandCards,
         ...curveCards,
         ...fastestWinCards,
+        ...intentCards,
+        ...comboLineCards,
+        ...comboCatalogCards,
+        ...rulesWatchoutCards,
       ]);
 
-      setTab("Deck Analysis");
-      updateStatus("done");
+      void (async () => {
+        try {
+          updateStatus("building primer");
+          const gd = await requestJson(
+            "/api/guides/generate",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ analyze: ana, sim_summary: simPayload.summary }),
+            },
+            "Guide generation",
+          );
+          if (activeRunRef.current !== runId) return;
+          setGuides(gd);
+          updateStatus("done");
+        } catch {
+          if (activeRunRef.current !== runId) return;
+          updateStatus("analysis ready");
+        }
+      })();
     } catch (err: any) {
       updateStatus("failed");
       alert(normalizeUiError(err, "Run failed"));
@@ -917,6 +1070,49 @@ export default function HomePage() {
     media.addListener(sync);
     return () => media.removeListener(sync);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (prefersReducedMotion) {
+      setVisibleCharts({});
+      visibleChartsRef.current = {};
+      chartObserverRef.current?.disconnect();
+      chartObserverRef.current = null;
+      return;
+    }
+
+    if (!("IntersectionObserver" in window)) {
+      setVisibleCharts({ __all: true });
+      visibleChartsRef.current = { __all: true };
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting && entry.intersectionRatio <= 0) continue;
+          const key = (entry.target as HTMLElement).dataset.chartKey;
+          if (!key || visibleChartsRef.current[key]) continue;
+          visibleChartsRef.current = { ...visibleChartsRef.current, [key]: true };
+          setVisibleCharts((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+          observer.unobserve(entry.target);
+        }
+      },
+      { threshold: 0.2, rootMargin: "0px 0px -12% 0px" },
+    );
+
+    chartObserverRef.current = observer;
+    Object.entries(chartElementsRef.current).forEach(([key, el]) => {
+      if (el && !visibleChartsRef.current[key]) observer.observe(el);
+    });
+
+    return () => {
+      observer.disconnect();
+      if (chartObserverRef.current === observer) {
+        chartObserverRef.current = null;
+      }
+    };
+  }, [prefersReducedMotion, tab]);
 
   useEffect(() => {
     setExpandedRoles({});
@@ -1012,23 +1208,10 @@ export default function HomePage() {
               <option key={b} value={b}>{b}</option>
             ))}
           </select>
-
-          <label>Policy</label>
-          <select className="select" value={policy} onChange={(e) => setPolicy(e.target.value)}>
-            <option value="auto">Auto</option>
-            <option value="casual">Casual value</option>
-            <option value="optimized">Optimized mid-power</option>
-            <option value="cedh">cEDH-like speed</option>
-            <option value="commander-centric">Commander-centric</option>
-            <option value="hold commander">Hold commander</option>
-          </select>
-          <p className="control-help">
-            If set to Auto, mulligan aggression and commander priority sliders determine the effective policy for the run.
-            Effective now: <strong>{computeEffectivePolicy()}</strong>.
-          </p>
+          <p className="control-help">Use the bracket that best matches your table’s speed and expectations.</p>
 
           <label>Simulation Runs: {simRuns}</label>
-          <p className="control-help">How many goldfish games to run. Higher gives more stable percentages, but takes longer.</p>
+          <p className="control-help">More runs make the results steadier. 2,000 is a good default.</p>
           <input
             className="slider"
             type="range"
@@ -1039,56 +1222,8 @@ export default function HomePage() {
             onChange={(e) => setSimRuns(Number(e.target.value))}
           />
 
-          <label>Turn Limit: {turnLimit}</label>
-          <p className="control-help">How many turns each simulation plays. Raise this for slower decks that stabilize late.</p>
-          <input
-            className="slider"
-            type="range"
-            min={5}
-            max={14}
-            step={1}
-            value={turnLimit}
-            onChange={(e) => setTurnLimit(Number(e.target.value))}
-          />
-
-          <label>Table Pressure: {tablePressure}%</label>
-          <p className="control-help">How often we assume opponents present must-answer threats. At 40%+, interaction gets used more actively.</p>
-          <input
-            className="slider"
-            type="range"
-            min={0}
-            max={100}
-            step={10}
-            value={tablePressure}
-            onChange={(e) => setTablePressure(Number(e.target.value))}
-          />
-
-          <label>Mulligan Aggression: {mulliganAggression}%</label>
-          <p className="control-help">Higher means greedier keeps for speed; lower means safer keeps for consistency (used in Auto policy).</p>
-          <input
-            className="slider"
-            type="range"
-            min={0}
-            max={100}
-            step={10}
-            value={mulliganAggression}
-            onChange={(e) => setMulliganAggression(Number(e.target.value))}
-          />
-
-          <label>Commander Priority: {commanderPriority}%</label>
-          <p className="control-help">Higher casts commander earlier; lower holds commander until setup is established (used in Auto policy).</p>
-          <input
-            className="slider"
-            type="range"
-            min={0}
-            max={100}
-            step={10}
-            value={commanderPriority}
-            onChange={(e) => setCommanderPriority(Number(e.target.value))}
-          />
-
           <label>Budget Cap (USD/card)</label>
-          <p className="control-help">Optional max price per suggested add. Leave empty for no budget filter.</p>
+          <p className="control-help">Only affects suggested adds. Leave blank for no budget filter.</p>
           <input
             className="input"
             type="text"
@@ -1098,13 +1233,87 @@ export default function HomePage() {
             placeholder="e.g. 10"
           />
 
-          <button className="btn btn-primary" onClick={runPipeline}>Run Full Analysis</button>
-        </div>
+          <label className="setting-toggle" htmlFor="advanced-settings-toggle">
+            <span>
+              <strong>Advanced settings</strong>
+              <span className="control-help setting-toggle-help">Show tuning controls for sim style and matchup assumptions.</span>
+            </span>
+            <input
+              id="advanced-settings-toggle"
+              type="checkbox"
+              checked={showAdvancedSettings}
+              onChange={(e) => setAdvancedMode(e.target.checked)}
+            />
+          </label>
 
-        <div className="legal-links control-help">
-          <Link href="/imprint">Imprint</Link>
-          <span>•</span>
-          <Link href="/privacy">Privacy</Link>
+          {showAdvancedSettings ? (
+            <div className="advanced-settings stack">
+              <label>Simulation Style</label>
+              <select className="select" value={policy} onChange={(e) => setPolicy(e.target.value)}>
+                <option value="auto">Auto</option>
+                <option value="casual">Casual value</option>
+                <option value="optimized">Optimized mid-power</option>
+                <option value="cedh">cEDH-like speed</option>
+                <option value="commander-centric">Commander-centric</option>
+                <option value="hold commander">Hold commander</option>
+              </select>
+              <p className="control-help">
+                Auto is recommended. Effective style right now: <strong>{computeEffectivePolicy()}</strong>.
+              </p>
+
+              <label>Turn Limit: {turnLimit}</label>
+              <p className="control-help">Increase this for slower decks that usually win later than turn 8.</p>
+              <input
+                className="slider"
+                type="range"
+                min={5}
+                max={14}
+                step={1}
+                value={turnLimit}
+                onChange={(e) => setTurnLimit(Number(e.target.value))}
+              />
+
+              <label>Table Pressure: {tablePressure}%</label>
+              <p className="control-help">How often the sim assumes opponents force you to spend interaction.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={tablePressure}
+                onChange={(e) => setTablePressure(Number(e.target.value))}
+              />
+
+              <label>Mulligan Aggression: {mulliganAggression}%</label>
+              <p className="control-help">Higher keeps faster, riskier hands. Lower keeps steadier hands.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={mulliganAggression}
+                onChange={(e) => setMulliganAggression(Number(e.target.value))}
+              />
+
+              <label>Commander Priority: {commanderPriority}%</label>
+              <p className="control-help">Higher casts commander earlier. Lower develops the board first.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={commanderPriority}
+                onChange={(e) => setCommanderPriority(Number(e.target.value))}
+              />
+            </div>
+          ) : (
+            <p className="control-help">Advanced mode is off. Deck.Check is using sensible defaults behind the scenes.</p>
+          )}
+
+          <button className="btn btn-primary" onClick={runPipeline}>Run Full Analysis</button>
         </div>
 
       </aside>
@@ -1123,9 +1332,9 @@ export default function HomePage() {
                 <div className={`mini-value ${parsedCount === 100 ? "tone-good" : "tone-warn"}`}>{parsedCount || "n/a"}</div>
               </div>
               <div className="mini-card">
-                <div className="mini-label">Validation</div>
+                <div className="mini-label">Deck legality</div>
                 <div className={`mini-value ${(parseRes?.errors || []).length === 0 ? "tone-good" : "tone-bad"}`}>
-                  {(parseRes?.errors || []).length === 0 ? "No blocking errors" : `${(parseRes?.errors || []).length} blocking issues`}
+                  {(parseRes?.errors || []).length === 0 ? "Legal" : String((parseRes?.errors || [])[0] || "Illegal")}
                 </div>
               </div>
               <div className="mini-card">
@@ -1141,6 +1350,22 @@ export default function HomePage() {
             </div>
             <textarea className="textarea" value={decklist} onChange={(e) => setDecklist(e.target.value)} />
 
+            {progressMeta.show ? (
+              <div className="deck-progress">
+                <div className="deck-progress-head">
+                  <strong>{progressMeta.label}</strong>
+                  <span>{progressMeta.percent}%</span>
+                </div>
+                <div className="deck-progress-track" aria-hidden="true">
+                  <div
+                    className={`deck-progress-fill ${progressMeta.tone === "error" ? "is-error" : ""}`}
+                    style={{ width: `${progressMeta.percent}%` }}
+                  />
+                </div>
+                <p className="control-help">{progressMeta.detail}</p>
+              </div>
+            ) : null}
+
             {(tagRes?.cards || []).length > 0 && (
               <div>
                 <strong>Card Preview</strong>
@@ -1150,19 +1375,30 @@ export default function HomePage() {
                       <tr><th>Card</th><th>Role hint</th></tr>
                     </thead>
                     <tbody>
-                      {(tagRes?.cards || []).map((c: any, i: number) => (
-                        <tr key={`${c.name}-${i}`} onClick={() => setSelectedCard(c.name)} style={{ cursor: "pointer" }}>
+                      {(tagRes?.cards || []).map((c: any, i: number) => {
+                        const isCommanderCard = c?.section === "commander" || c?.name === parseRes?.commander;
+                        return (
+                        <tr
+                          key={`${c.name}-${i}`}
+                          onClick={() => setSelectedCard(c.name)}
+                          className={`card-preview-row ${isCommanderCard ? "is-commander" : ""}`}
+                          style={{ cursor: "pointer" }}
+                        >
                           <td style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             {cardThumb(c.name) ? (
                               <img src={cardThumb(c.name)} alt={c.name} width={30} height={42} loading="lazy" style={{ borderRadius: 4, border: "1px solid #ddd" }} />
                             ) : (
                               <div style={{ width: 30, height: 42, borderRadius: 4, background: "#efefef", border: "1px solid #ddd" }} />
                             )}
-                            <span>{c.name}</span>
+                            <span className="card-preview-name">
+                              {c.name}
+                              {isCommanderCard ? <span className="card-preview-badge">Commander</span> : null}
+                            </span>
                           </td>
                           <td>{(c.tags || []).slice(0, 2).join(", ") || "n/a"}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1194,18 +1430,45 @@ export default function HomePage() {
         <div className="outcome-shell">
           <div className="outcome-content">
         <div className="stack" style={{ marginBottom: 12 }}>
-          <h3>{tab}</h3>
-          <p className="muted">Outcomes and findings for the selected run. Status: {status}</p>
-          <div className="tab-list" style={{ marginTop: 4, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
-            {TABS.map((t) => (
-              <button key={t} className={`btn tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{t}</button>
-            ))}
-          </div>
+          <h3>{hasOutcomeResources ? tab : "View Panel"}</h3>
+          <p className="muted">
+            {hasOutcomeResources
+              ? `Outcomes and findings for the selected run. Status: ${status}`
+              : "No view resources loaded yet. Run Full Analysis to fetch card data, simulation output, and derived reports for this panel."}
+          </p>
+          {hasOutcomeResources ? (
+            <div className="tab-list" style={{ marginTop: 4, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
+              {TABS.map((t) => (
+                <button key={t} className={`btn tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{t}</button>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div className="block">
+          {!hasOutcomeResources ? (
+            <div className="resource-empty-state">
+              <h2>Nothing to show yet</h2>
+              <p>
+                This panel stays empty until the app has the resources it needs: fetched card data, goldfish simulation results,
+                and derived analysis outputs.
+              </p>
+              <p className="muted">Run Full Analysis to populate the views.</p>
+            </div>
+          ) : (
+            <>
           {tab === "Deck Analysis" && (
             <div className="guide-rendered">
+              <div className="row" style={{ marginBottom: 8, gap: 6, flexWrap: "wrap" }}>
+                <button className={`btn ${deckAnalysisView === "Overview" ? "active" : ""}`} onClick={() => setDeckAnalysisView("Overview")}>
+                  Overview
+                </button>
+                <button className={`btn ${deckAnalysisView === "Combos" ? "active" : ""}`} onClick={() => setDeckAnalysisView("Combos")}>
+                  Combos
+                </button>
+              </div>
+              {deckAnalysisView === "Overview" ? (
+                <>
               <h2>Key Findings</h2>
               <ul>
                 {findings.map((f, i) => <li key={i}>{f}</li>)}
@@ -1295,58 +1558,32 @@ export default function HomePage() {
               <p><strong>Main kill vectors:</strong> {(intentSummary?.kill_vectors || []).join(", ") || "n/a"}</p>
               <p><strong>Confidence:</strong> {typeof intentSummary?.confidence === "number" ? `${(intentSummary.confidence * 100).toFixed(1)}%` : "n/a"}</p>
               <p><strong>Combo support score:</strong> {comboIntel?.combo_support_score ?? 0} / 100</p>
+              <p><strong>Complete combos in list:</strong> {comboComplete.length}</p>
               {comboIntel?.fetched_at ? <p className="control-help">CommanderSpellbook fetched: {new Date(comboIntel.fetched_at).toLocaleString()}</p> : null}
+              <p className="control-help">
+                Use the <strong>Combos</strong> view above for the full CommanderSpellbook catalog of complete combo lines already contained in this deck.
+              </p>
 
               <h3>Key Support Cards</h3>
-              <ul>
-                {(intentSummary?.key_support_cards || []).slice(0, 8).map((name: string, i: number) => (
-                  <li key={`support-${i}`}>
-                    <button className="btn" onClick={() => setSelectedCard(name)}>{name}</button>
-                  </li>
-                ))}
-              </ul>
+              {renderCardRow((intentSummary?.key_support_cards || []).slice(0, 8), "intent-support", {
+                emptyText: "No support cards detected.",
+              })}
 
               <h3>Engine Cards</h3>
-              <ul>
-                {(intentSummary?.key_engine_cards || []).slice(0, 8).map((name: string, i: number) => (
-                  <li key={`engine-${i}`}>
-                    <button className="btn" onClick={() => setSelectedCard(name)}>{name}</button>
-                  </li>
-                ))}
-              </ul>
+              {renderCardRow((intentSummary?.key_engine_cards || []).slice(0, 8), "intent-engine", {
+                emptyText: "No engine cards detected.",
+              })}
 
               <h3>Main Wincons</h3>
-              <ul>
-                {(intentSummary?.main_wincon_cards || []).slice(0, 8).map((name: string, i: number) => (
-                  <li key={`wincon-${i}`}>
-                    <button className="btn" onClick={() => setSelectedCard(name)}>{name}</button>
-                  </li>
-                ))}
-              </ul>
+              {renderCardRow((intentSummary?.main_wincon_cards || []).slice(0, 8), "intent-wincon", {
+                emptyText: "No wincon cards detected.",
+              })}
 
               <h3>Key Interaction</h3>
-              <ul>
-                {(intentSummary?.key_interaction_cards || []).slice(0, 8).map((name: string, i: number) => (
-                  <li key={`interaction-${i}`}>
-                    <button className="btn" onClick={() => setSelectedCard(name)}>{name}</button>
-                  </li>
-                ))}
-              </ul>
+              {renderCardRow((intentSummary?.key_interaction_cards || []).slice(0, 8), "intent-interaction", {
+                emptyText: "No key interaction cards detected.",
+              })}
 
-              <h3>Detected Combo Lines (CommanderSpellbook)</h3>
-              {(intentSummary?.combo_lines || []).length === 0 ? (
-                <p className="muted">No complete or near-miss combo lines detected.</p>
-              ) : (
-                <ul>
-                  {(intentSummary?.combo_lines || []).slice(0, 8).map((line: any, i: number) => (
-                    <li key={`combo-line-${i}`}>
-                      <strong>{line.variant_id}</strong> ({line.status === "complete" ? "complete" : "near miss"})
-                      {line.present_cards?.length ? ` | present: ${line.present_cards.slice(0, 4).join(", ")}` : ""}
-                      {line.missing_cards?.length ? ` | missing: ${line.missing_cards.join(", ")}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              )}
               {comboIntel?.warnings?.length > 0 && (
                 <ul className="list-compact">
                   {comboIntel.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
@@ -1403,11 +1640,16 @@ export default function HomePage() {
               </ul>
 
               <h2>Most Important Cards Overall</h2>
-              <ul>
-                {topImportance.slice(0, 8).map((c: any, i: number) => (
-                  <li key={i}>{c.card} ({(c.score ?? 0).toFixed(3)})</li>
-                ))}
-              </ul>
+              {renderCardRow(
+                topImportance.slice(0, 8).map((c: any) => c.card),
+                "analysis-top-importance",
+                {
+                  emptyText: "No impact cards available.",
+                  labelMap: Object.fromEntries(
+                    topImportance.slice(0, 8).map((c: any) => [c.card, `${c.card} (${(c.score ?? 0).toFixed(3)})`]),
+                  ),
+                },
+              )}
 
               <h2>Data Provenance</h2>
               <ul>
@@ -1417,6 +1659,77 @@ export default function HomePage() {
                   </li>
                 ))}
               </ul>
+                </>
+              ) : (
+                <div className="stack">
+                  <h2>CommanderSpellbook Combo Catalog</h2>
+                  <p className="muted">
+                    This view only shows CommanderSpellbook combos where every named piece is already in the decklist.
+                    It is deck-construction evidence, not proof that the line is assembled, protected, and resolved on curve.
+                  </p>
+
+                  <div className="kpi-grid">
+                    <div className="mini-card">
+                      <div className="mini-label">Complete lines</div>
+                      <div className="mini-value tone-good">{comboComplete.length}</div>
+                      <div className="control-help">Known combo variants already fully contained in this decklist.</div>
+                    </div>
+                    <div className="mini-card">
+                      <div className="mini-label">Combo support score</div>
+                      <div className="mini-value">{comboIntel?.combo_support_score ?? 0} / 100</div>
+                      <div className="control-help">Higher means more complete CommanderSpellbook lines are already contained in the list.</div>
+                    </div>
+                    <div className="mini-card">
+                      <div className="mini-label">Source timestamp</div>
+                      <div className="mini-value">{comboIntel?.fetched_at ? "Live" : "Unknown"}</div>
+                      <div className="control-help">
+                        {comboIntel?.fetched_at ? new Date(comboIntel.fetched_at).toLocaleString() : "No fetch timestamp recorded."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {comboIntel?.warnings?.length > 0 && (
+                    <div className="block">
+                      <strong>Source warnings</strong>
+                      <ul className="list-compact">
+                        {comboIntel.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="stack">
+                    <h3>Complete Combos In This Deck</h3>
+                    {comboComplete.length === 0 ? (
+                      <p className="muted">No complete CommanderSpellbook combo lines detected in the current list.</p>
+                    ) : (
+                      comboComplete.map((variant: any, i: number) => (
+                        <div key={`combo-complete-${variant?.variant_id || i}`} className="block combo-variant-card">
+                          <div className="combo-variant-header">
+                            <div className="stack" style={{ gap: 4 }}>
+                              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                                <span className="combo-badge combo-badge-complete">Complete</span>
+                                <strong>{variant?.variant_id || `Combo ${i + 1}`}</strong>
+                                {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
+                              </div>
+                              <div className="control-help">
+                                Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
+                              </div>
+                            </div>
+                            {variant?.source_url ? (
+                              <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
+                            ) : null}
+                          </div>
+                          {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
+                          <div className="control-help">Cards in this line</div>
+                          {renderCardRow(variant?.cards || [], `combo-complete-all-${i}`, {
+                            emptyText: "No cards listed for this combo.",
+                          })}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1445,30 +1758,30 @@ export default function HomePage() {
                 Percentiles: <strong>p50</strong> means the middle/typical game, <strong>p75</strong> means better-than-typical games, and <strong>p90</strong> means high-roll games.
               </p>
               {renderMetricHelp("mana_percentiles")}
-              <div style={{ width: "100%", height: 230 }}>
+              <div ref={chartViewportRef("lenses-mana-percentiles")} style={{ width: "100%", height: 230 }}>
                 <ResponsiveContainer>
                   <LineChart data={graphPayloads?.mana_percentiles || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Mana sources", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Line {...chartMotion(0)} type="monotone" dataKey="p50" stroke="#111" strokeWidth={2} />
-                    <Line {...chartMotion(1)} type="monotone" dataKey="p75" stroke="#555" strokeWidth={2} />
-                    <Line {...chartMotion(2)} type="monotone" dataKey="p90" stroke="#999" strokeWidth={2} />
+                    <Line {...chartMotion("lenses-mana-percentiles", 0)} type="monotone" dataKey="p50" stroke="#111" strokeWidth={2} />
+                    <Line {...chartMotion("lenses-mana-percentiles", 1)} type="monotone" dataKey="p75" stroke="#555" strokeWidth={2} />
+                    <Line {...chartMotion("lenses-mana-percentiles", 2)} type="monotone" dataKey="p90" stroke="#999" strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
               {renderDeckBlurb("mana_percentiles")}
 
               {renderMetricHelp("land_hit_cdf")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-land-hit-cdf")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <LineChart data={graphPayloads?.land_hit_cdf || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "Probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line {...chartMotion(0)} type="monotone" dataKey="p_hit_on_curve" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion("lenses-land-hit-cdf", 0)} type="monotone" dataKey="p_hit_on_curve" stroke="#111" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1482,7 +1795,7 @@ export default function HomePage() {
                   <div>Color-access stress is minimal here, so this metric is less important than total mana development and action density.</div>
                 </div>
               ) : (
-                <div style={{ width: "100%", height: 240 }}>
+                <div ref={chartViewportRef("lenses-color-access")} style={{ width: "100%", height: 240 }}>
                   <ResponsiveContainer>
                     <LineChart data={graphPayloads?.color_access || []}>
                       <CartesianGrid strokeDasharray="3 3" />
@@ -1491,8 +1804,8 @@ export default function HomePage() {
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} label={{ value: "P(full identity)", angle: 90, position: "insideRight" }} />
                       <Tooltip formatter={(v: any, k: any) => (String(k).includes("p_") ? `${(Number(v) * 100).toFixed(1)}%` : Number(v).toFixed(2))} />
                       <Legend />
-                      <Line {...chartMotion(0)} yAxisId="left" type="monotone" dataKey="avg_colors" stroke="#333" strokeWidth={2.4} name="Avg colors online" />
-                      <Line {...chartMotion(1)} yAxisId="right" type="monotone" dataKey="p_full_identity" stroke="#7a7a7a" strokeWidth={2} name="P(full identity online)" />
+                      <Line {...chartMotion("lenses-color-access", 0)} yAxisId="left" type="monotone" dataKey="avg_colors" stroke="#333" strokeWidth={2.4} name="Avg colors online" />
+                      <Line {...chartMotion("lenses-color-access", 1)} yAxisId="right" type="monotone" dataKey="p_full_identity" stroke="#7a7a7a" strokeWidth={2} name="P(full identity online)" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -1501,7 +1814,7 @@ export default function HomePage() {
 
               <h2>Plan Execution Lens</h2>
               {renderMetricHelp("phase_timeline")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("lenses-phase-timeline")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <AreaChart data={graphPayloads?.phase_timeline || []}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -1509,23 +1822,23 @@ export default function HomePage() {
                     <YAxis domain={[0, 1]} label={{ value: "Share of games", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
                     <Legend />
-                    <Area {...chartMotion(0)} type="monotone" dataKey="setup" stackId="1" stroke="#bbb" fill="#d8d8d8" />
-                    <Area {...chartMotion(1)} type="monotone" dataKey="engine" stackId="1" stroke="#888" fill="#b7b7b7" />
-                    <Area {...chartMotion(2)} type="monotone" dataKey="win_attempt" stackId="1" stroke="#333" fill="#6e6e6e" />
+                    <Area {...chartMotion("lenses-phase-timeline", 0)} type="monotone" dataKey="setup" stackId="1" stroke="#bbb" fill="#d8d8d8" />
+                    <Area {...chartMotion("lenses-phase-timeline", 1)} type="monotone" dataKey="engine" stackId="1" stroke="#888" fill="#b7b7b7" />
+                    <Area {...chartMotion("lenses-phase-timeline", 2)} type="monotone" dataKey="win_attempt" stackId="1" stroke="#333" fill="#6e6e6e" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
               {renderDeckBlurb("phase_timeline")}
 
               {renderMetricHelp("win_turn_cdf")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-win-turn-cdf")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <LineChart data={graphPayloads?.win_turn_cdf || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "Cumulative probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line {...chartMotion(0)} type="monotone" dataKey="cdf" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion("lenses-win-turn-cdf", 0)} type="monotone" dataKey="cdf" stroke="#111" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1533,28 +1846,28 @@ export default function HomePage() {
 
               <h2>Risk Lens</h2>
               {renderMetricHelp("no_action_funnel")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-no-action-funnel")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <LineChart data={graphPayloads?.no_action_funnel || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis domain={[0, 1]} label={{ value: "No-action probability", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Line {...chartMotion(0)} type="monotone" dataKey="p_no_action" stroke="#8a1e1e" strokeWidth={2.5} />
+                    <Line {...chartMotion("lenses-no-action-funnel", 0)} type="monotone" dataKey="p_no_action" stroke="#8a1e1e" strokeWidth={2.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
               {renderDeckBlurb("no_action_funnel")}
 
               {renderMetricHelp("dead_cards_top")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("lenses-dead-cards-top")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <BarChart data={(graphPayloads?.dead_cards_top || []).slice(0, 10)}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="card" hide />
                     <YAxis label={{ value: "Stranded rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar {...chartMotion(0)} dataKey="rate" fill="#444" />
+                    <Bar {...chartMotion("lenses-dead-cards-top", 0)} dataKey="rate" fill="#444" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1562,27 +1875,27 @@ export default function HomePage() {
 
               <h2>Operational Lens</h2>
               {renderMetricHelp("commander_cast_distribution")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-commander-cast")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={graphPayloads?.commander_cast_distribution || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Cast turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar {...chartMotion(0)} dataKey="rate" fill="#111" />
+                    <Bar {...chartMotion("lenses-commander-cast", 0)} dataKey="rate" fill="#111" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               {renderDeckBlurb("commander_cast_distribution")}
               {renderMetricHelp("mulligan_funnel")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-mulligan-funnel")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={graphPayloads?.mulligan_funnel || []}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="mulligans" label={{ value: "Mulligans taken", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Rate", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
-                    <Bar {...chartMotion(0)} dataKey="rate" fill="#666" />
+                    <Bar {...chartMotion("lenses-mulligan-funnel", 0)} dataKey="rate" fill="#666" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1590,7 +1903,7 @@ export default function HomePage() {
 
               <h2>Complex Systems Metrics</h2>
               <p className="muted">Adapted from systems analysis: resilience, redundancy, bottlenecks, and impact concentration for deck robustness.</p>
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("lenses-systems-metrics")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart
                     data={[
@@ -1604,7 +1917,7 @@ export default function HomePage() {
                     <XAxis dataKey="metric" label={{ value: "Metric", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Score", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Bar {...chartMotion(0)} dataKey="value" fill="#2f2f2f" />
+                    <Bar {...chartMotion("lenses-systems-metrics", 0)} dataKey="value" fill="#2f2f2f" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1638,7 +1951,7 @@ export default function HomePage() {
                   {(analysis?.rules_watchouts || []).map((w: any, i: number) => (
                     <tr key={`${w.card}-${i}`}>
                       <td>
-                        <button className="btn" onClick={() => setSelectedCard(w.card)}>{w.card}</button>
+                        {renderCardChip(w.card, `watchout-${i}`, { width: 20, height: 28 })}
                         {w.commander ? <div className="control-help">Commander</div> : null}
                         <div className="control-help">
                           <a href={w.scryfall_uri || "#"} target="_blank" rel="noreferrer">Oracle page</a>
@@ -1718,12 +2031,12 @@ export default function HomePage() {
                             {(row.cards || []).length === 0 ? (
                               <span className="muted">No cards mapped for this role in current tagged list.</span>
                             ) : (
-                              <div className="row" style={{ flexWrap: "wrap" }}>
-                                {(row.cards || []).map((x: any, idx: number) => (
-                                  <button key={`${row.role}-${x.name}-${idx}`} className="btn" onClick={() => setSelectedCard(x.name)}>
-                                    {x.qty}x {x.name}
-                                  </button>
-                                ))}
+                              <div className="card-chip-row">
+                                {(row.cards || []).map((x: any, idx: number) =>
+                                  renderCardChip(x.name, `${row.role}-${x.name}-${idx}`, {
+                                    label: `${x.qty}x ${x.name}`,
+                                  }),
+                                )}
                               </div>
                             )}
                           </td>
@@ -1857,7 +2170,7 @@ export default function HomePage() {
 
               <h2>Pip Demand by Color</h2>
               {renderMetricHelp("manabase_pip_distribution")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("manabase-pip-distribution")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <BarChart data={graphPayloads?.manabase_pip_distribution || []}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -1865,9 +2178,9 @@ export default function HomePage() {
                     <YAxis label={{ value: "Pip demand", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(2)} />
                     <Legend />
-                    <Bar {...chartMotion(0)} dataKey="early" stackId="pips" fill="#9a9a9a" name="Early (MV<=2)" />
-                    <Bar {...chartMotion(1)} dataKey="mid" stackId="pips" fill="#707070" name="Mid (MV3-4)" />
-                    <Bar {...chartMotion(2)} dataKey="late" stackId="pips" fill="#3a3a3a" name="Late (MV5+)" />
+                    <Bar {...chartMotion("manabase-pip-distribution", 0)} dataKey="early" stackId="pips" fill="#9a9a9a" name="Early (MV<=2)" />
+                    <Bar {...chartMotion("manabase-pip-distribution", 1)} dataKey="mid" stackId="pips" fill="#707070" name="Mid (MV3-4)" />
+                    <Bar {...chartMotion("manabase-pip-distribution", 2)} dataKey="late" stackId="pips" fill="#3a3a3a" name="Late (MV5+)" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1875,7 +2188,7 @@ export default function HomePage() {
 
               <h2>Source Coverage by Color</h2>
               {renderMetricHelp("manabase_source_coverage")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("manabase-source-coverage")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <BarChart data={graphPayloads?.manabase_source_coverage || []}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -1883,8 +2196,8 @@ export default function HomePage() {
                     <YAxis label={{ value: "Source count", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(2)} />
                     <Legend />
-                    <Bar {...chartMotion(0)} dataKey="land_sources" stackId="src" fill="#4b4b4b" name="Land sources" />
-                    <Bar {...chartMotion(1)} dataKey="nonland_sources" stackId="src" fill="#9b9b9b" name="Nonland sources" />
+                    <Bar {...chartMotion("manabase-source-coverage", 0)} dataKey="land_sources" stackId="src" fill="#4b4b4b" name="Land sources" />
+                    <Bar {...chartMotion("manabase-source-coverage", 1)} dataKey="nonland_sources" stackId="src" fill="#9b9b9b" name="Nonland sources" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1892,7 +2205,7 @@ export default function HomePage() {
 
               <h2>Demand vs Supply Gap</h2>
               {renderMetricHelp("manabase_balance_gap")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("manabase-balance-gap")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <BarChart data={graphPayloads?.manabase_balance_gap || []}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -1900,8 +2213,8 @@ export default function HomePage() {
                     <YAxis label={{ value: "Share", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${(Number(v) * 100).toFixed(1)}%`} />
                     <Legend />
-                    <Bar {...chartMotion(0)} dataKey="demand_share" fill="#2d2d2d" name="Demand share" />
-                    <Bar {...chartMotion(1)} dataKey="source_share" fill="#8a8a8a" name="Source share" />
+                    <Bar {...chartMotion("manabase-balance-gap", 0)} dataKey="demand_share" fill="#2d2d2d" name="Demand share" />
+                    <Bar {...chartMotion("manabase-balance-gap", 1)} dataKey="source_share" fill="#8a8a8a" name="Source share" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1915,7 +2228,7 @@ export default function HomePage() {
                 <div><strong>Total mana value:</strong> {Number(manabaseSummary?.total_mana_value_with_lands || 0).toFixed(1)} with lands, {Number(manabaseSummary?.total_mana_value_without_lands || 0).toFixed(1)} without lands.</div>
                 <div><strong>How to use:</strong> click a mana-value bucket to inspect cards and estimated on-curve cast chance for that bucket.</div>
               </div>
-              <div style={{ width: "100%", height: 280 }}>
+              <div ref={chartViewportRef("manabase-curve-histogram")} style={{ width: "100%", height: 280 }}>
                 <ResponsiveContainer>
                   <BarChart data={curveData}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -1930,6 +2243,7 @@ export default function HomePage() {
                     />
                     <Legend />
                     <Bar
+                      {...chartMotion("manabase-curve-histogram", 0)}
                       yAxisId="left"
                       dataKey="permanents"
                       stackId="curve"
@@ -1938,6 +2252,7 @@ export default function HomePage() {
                       onClick={(d: any) => setSelectedCurveMv(Number(d?.mana_value ?? 0))}
                     />
                     <Bar
+                      {...chartMotion("manabase-curve-histogram", 1)}
                       yAxisId="left"
                       dataKey="spells"
                       stackId="curve"
@@ -1945,7 +2260,7 @@ export default function HomePage() {
                       name="Spells"
                       onClick={(d: any) => setSelectedCurveMv(Number(d?.mana_value ?? 0))}
                     />
-                    <Line {...chartMotion(0)} yAxisId="right" type="monotone" dataKey="p_on_curve_est" stroke="#111" strokeWidth={2} dot={{ r: 2 }} name="Estimated P(on curve)" />
+                    <Line {...chartMotion("manabase-curve-histogram", 2)} yAxisId="right" type="monotone" dataKey="p_on_curve_est" stroke="#111" strokeWidth={2} dot={{ r: 2 }} name="Estimated P(on curve)" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2080,15 +2395,15 @@ export default function HomePage() {
 
               <h2>Plan Progress By Turn</h2>
               {renderMetricHelp("plan_progress")}
-              <div style={{ width: "100%", height: 260 }}>
+              <div ref={chartViewportRef("goldfish-plan-progress")} style={{ width: "100%", height: 260 }}>
                 <ResponsiveContainer>
                   <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="turn" label={{ value: "Turn", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Plan progress score", angle: -90, position: "insideLeft" }} />
                     <Tooltip />
-                    <Line {...chartMotion(0)} type="monotone" dataKey="median" stroke="#111" strokeWidth={2.5} />
-                    <Line {...chartMotion(1)} type="monotone" dataKey="p90" stroke="#8a8a8a" strokeWidth={2} />
+                    <Line {...chartMotion("goldfish-plan-progress", 0)} type="monotone" dataKey="median" stroke="#111" strokeWidth={2.5} />
+                    <Line {...chartMotion("goldfish-plan-progress", 1)} type="monotone" dataKey="p90" stroke="#8a8a8a" strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -2096,14 +2411,14 @@ export default function HomePage() {
 
               <h2>Failure Mode Rates</h2>
               {renderMetricHelp("failure_rates")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("goldfish-failure-rates")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={failureData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="name" label={{ value: "Failure type", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Percent of runs", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${Number(v).toFixed(1)}%`} />
-                    <Bar {...chartMotion(0)} dataKey="value" fill="#444" />
+                    <Bar {...chartMotion("goldfish-failure-rates", 0)} dataKey="value" fill="#444" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2111,14 +2426,14 @@ export default function HomePage() {
 
               <h2>Wincon Outcomes</h2>
               {renderMetricHelp("wincon_outcomes")}
-              <div style={{ width: "100%", height: 220 }}>
+              <div ref={chartViewportRef("goldfish-wincon-outcomes")} style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={winconData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="name" label={{ value: "Win route", position: "insideBottom", offset: -2 }} />
                     <YAxis label={{ value: "Percent of runs", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => `${Number(v).toFixed(1)}%`} />
-                    <Bar {...chartMotion(0)} dataKey="value" fill="#111" />
+                    <Bar {...chartMotion("goldfish-wincon-outcomes", 0)} dataKey="value" fill="#111" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2172,6 +2487,7 @@ export default function HomePage() {
                       <p className="control-help">
                         Run index: {fw?.run_index ?? "n/a"} | Mulligans taken: {fw?.mulligans_taken ?? 0}
                       </p>
+                      {fw?.win_reason ? <p className="deck-blurb" style={{ marginTop: -4 }}>Why this counted as a win: {fw.win_reason}</p> : null}
 
                       <h4 style={{ margin: 0 }}>Mulligan Sequence</h4>
                       {(fw?.mulligan_steps || []).length === 0 ? (
@@ -2252,6 +2568,7 @@ export default function HomePage() {
                               <td>
                                 {t?.phase}
                                 {t?.wincon_hit ? <div className="control-help">Win line: {t.wincon_hit}</div> : null}
+                                {t?.win_reason ? <div className="control-help">{t.win_reason}</div> : null}
                               </td>
                               <td>{t?.mana_total ?? "n/a"}</td>
                             </tr>
@@ -2274,14 +2591,14 @@ export default function HomePage() {
                 <div><strong>Bad:</strong> If top cards are off-plan or irreplaceable single points of failure, deck is fragile.</div>
                 <div><strong>What to change:</strong> Add role-redundant alternatives and remove low-impact off-plan cards.</div>
               </div>
-              <div style={{ width: "100%", height: 240 }}>
+              <div ref={chartViewportRef("importance-top-chart")} style={{ width: "100%", height: 240 }}>
                 <ResponsiveContainer>
                   <BarChart data={importanceChartData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="card" hide />
                     <YAxis label={{ value: "Importance score", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(v: any) => Number(v).toFixed(3)} />
-                    <Bar {...chartMotion(0)} dataKey="score" fill="#222" />
+                    <Bar {...chartMotion("importance-top-chart", 0)} dataKey="score" fill="#222" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -2326,7 +2643,7 @@ export default function HomePage() {
                   {(analysis?.cuts || []).slice(0, 12).map((c: any, i: number) => (
                     <tr key={`${c.card}-${i}`}>
                       <td>
-                        <button className="btn" onClick={() => setSelectedCard(c.card)}>{c.card}</button>
+                        {renderCardChip(c.card, `deadweight-${i}`)}
                       </td>
                       <td>{c.reason || "Low impact in current simulations."}</td>
                       <td>{typeof c.score === "number" ? c.score.toFixed(3) : "n/a"}</td>
@@ -2428,13 +2745,19 @@ export default function HomePage() {
               {comboNearMiss.length > 0 && (
                 <>
                   <h2>Combo-Targeted Upgrades</h2>
-                  <ul>
+                  <div className="stack">
                     {comboNearMiss.slice(0, 5).map((v: any, i: number) => (
-                      <li key={i}>
-                        {v.variant_id}: add {v.missing_cards?.slice(0, 2).join(", ") || "missing pieces"} to complete a near-miss line.
-                      </li>
+                      <div key={i} className="block">
+                        <div><strong>{v.variant_id}</strong></div>
+                        <div className="control-help">
+                          Add the missing pieces below to complete this near-miss line.
+                        </div>
+                        {renderCardRow((v?.missing_cards || []).slice(0, 4), `opt-nearmiss-${i}`, {
+                          emptyText: "No missing cards listed.",
+                        })}
+                      </div>
                     ))}
-                  </ul>
+                  </div>
                 </>
               )}
             </div>
@@ -2444,6 +2767,8 @@ export default function HomePage() {
             <div className="guide-rendered">
               <ReactMarkdown>{guides?.play_guide_md || "Run analysis first."}</ReactMarkdown>
             </div>
+          )}
+            </>
           )}
         </div>
           </div>
@@ -2510,9 +2835,7 @@ export default function HomePage() {
                   <div className="stack">
                     {strictlyBetter.map((opt: any, idx: number) => (
                       <div key={`${opt.card}-${idx}`} className="insight-option">
-                        <button className="btn" onClick={() => setSelectedCard(opt.card)}>
-                          {opt.card}
-                        </button>
+                        {renderCardChip(opt.card, `strictly-better-${idx}`)}
                         <div className="control-help">Price: {opt.price_usd != null ? `$${Number(opt.price_usd).toFixed(2)}` : "n/a"}</div>
                         <ul className="list-compact">
                           {(opt.reasons || []).map((r: string, i: number) => <li key={i}>{r}</li>)}

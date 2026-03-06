@@ -46,6 +46,7 @@ from app.services.updates import update_all_data
 from app.services.validator import validate_deck
 from app.services.rules_watchouts import build_rules_watchouts
 from app.services.replacements import strictly_better_replacements
+from app.services.winplans import enrich_sim_cards, infer_supported_wincons
 from app.workers.queue import redis_conn, sim_queue
 from app.workers.cache import get_cached_simulation
 from app.workers.tasks import get_vector_backend_status, run_simulation_task
@@ -153,10 +154,18 @@ def tags_taxonomy():
 @router.post("/sim/run", response_model=SimRunResponse)
 def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
     payload = req.model_dump()
-    card_map = CardDataService().get_cards_by_name([req.commander] if req.commander else [])
+    lookup_names = [c.name for c in req.cards]
+    if req.commander:
+        lookup_names.append(req.commander)
+    card_map = CardDataService().get_cards_by_name(lookup_names)
     commander_colors = list(card_map.get(req.commander or "", {}).get("color_identity") or [])
     payload["color_identity"] = commander_colors
     payload["color_identity_size"] = len(commander_colors) if req.commander else 3
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], req.commander)
+    payload["cards"] = enrich_sim_cards(req.cards, card_map, req.commander)
+    payload["combo_variants"] = combo_intel.get("matched_variants", [])
+    payload["combo_source_live"] = not bool(combo_intel.get("warnings"))
+    payload["primary_wincons"] = infer_supported_wincons(payload["cards"], req.commander, combo_intel)
     cached = get_cached_simulation(payload)
     job_id = str(uuid4())
     if cached is not None:

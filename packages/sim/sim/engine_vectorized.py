@@ -12,11 +12,15 @@ import numpy as np
 class _DeckArrays:
     names: List[str]
     mana_value: np.ndarray
+    power: np.ndarray
     is_land: np.ndarray
     is_ramp: np.ndarray
     is_fast_mana: np.ndarray
     is_early_action: np.ndarray
     is_fixing: np.ndarray
+    is_permanent: np.ndarray
+    is_creature: np.ndarray
+    is_artifact: np.ndarray
     is_draw: np.ndarray
     is_engine: np.ndarray
     is_payoff: np.ndarray
@@ -27,6 +31,40 @@ class _DeckArrays:
     is_removal: np.ndarray
     is_counter: np.ndarray
     is_stax: np.ndarray
+    has_haste: np.ndarray
+    evasion_score: np.ndarray
+    combat_buff: np.ndarray
+    commander_buff: np.ndarray
+    token_attack_power: np.ndarray
+    token_bodies: np.ndarray
+    extra_combat_factor: np.ndarray
+    infect: np.ndarray
+    toxic: np.ndarray
+    proliferate: np.ndarray
+    burn_value: np.ndarray
+    repeatable_burn: np.ndarray
+    mill_value: np.ndarray
+    repeatable_mill: np.ndarray
+    alt_win_code: np.ndarray
+
+
+def _normalize_name(name: str | None) -> str:
+    return (name or "").strip().lower()
+
+
+_ALT_WIN_CODE = {
+    None: 0,
+    "": 0,
+    "generic": 1,
+    "life40": 2,
+    "artifacts20": 3,
+    "creatures20": 4,
+    "graveyard20": 5,
+    "library2": 6,
+    "library0": 7,
+    "hand0": 8,
+    "life1": 9,
+}
 
 
 def _policy_alias(policy: str, bracket: int) -> str:
@@ -41,7 +79,7 @@ def _policy_alias(policy: str, bracket: int) -> str:
 
 def _normalize_wincons(primary_wincons: List[str] | None) -> List[str]:
     if not primary_wincons:
-        return ["Combat", "Combo", "Commander Damage", "Control Lock", "Alt Win"]
+        return ["Combo", "Alt Win", "Poison", "Commander Damage", "Drain/Burn", "Mill", "Control Lock", "Combat"]
     return primary_wincons
 
 
@@ -69,15 +107,127 @@ def _turn_sort_key(v: str):
         return (0, 0)
 
 
+def _separate_sim_cards(cards: List[dict], commander: str | None) -> tuple[List[dict], dict | None]:
+    commander_key = _normalize_name(commander)
+    main_cards: List[dict] = []
+    commander_card: dict | None = None
+
+    for card in cards:
+        name = str(card.get("name", "")).strip()
+        section = str(card.get("section", "deck") or "deck").strip().lower()
+        is_commander = commander_key and _normalize_name(name) == commander_key
+
+        if is_commander and (section == "commander" or commander_card is None):
+            commander_card = card
+            if section != "deck":
+                continue
+        if section != "deck":
+            continue
+        if is_commander:
+            continue
+        main_cards.append(card)
+
+    return main_cards, commander_card
+
+
+def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
+    normalized: List[Dict] = []
+    for variant in combo_variants or []:
+        raw_cards = variant.get("cards") or []
+        cards = []
+        keys = set()
+        for name in raw_cards:
+            key = _normalize_name(str(name))
+            if not key:
+                continue
+            cards.append(str(name).strip())
+            keys.add(key)
+        if not keys:
+            continue
+        normalized.append(
+            {
+                "variant_id": str(variant.get("variant_id") or ""),
+                "cards": cards,
+                "keys": keys,
+            }
+        )
+    return normalized
+
+
+def _prepare_combo_requirements(deck_names: List[str], combo_variants: List[Dict], commander: str | None) -> List[Dict]:
+    if not combo_variants:
+        return []
+    commander_key = _normalize_name(commander)
+    name_to_indices: Dict[str, List[int]] = defaultdict(list)
+    for idx, name in enumerate(deck_names):
+        name_to_indices[_normalize_name(name)].append(idx)
+
+    requirements: List[Dict] = []
+    for variant in combo_variants:
+        groups = []
+        requires_commander = False
+        valid = True
+        for key in variant["keys"]:
+            if commander_key and key == commander_key:
+                requires_commander = True
+                continue
+            idxs = name_to_indices.get(key, [])
+            if not idxs:
+                valid = False
+                break
+            groups.append(np.array(idxs, dtype=np.int32))
+        if valid:
+            requirements.append(
+                {
+                    "cards": variant["cards"],
+                    "groups": groups,
+                    "requires_commander": requires_commander,
+                }
+            )
+    return requirements
+
+
+def _detect_live_combo_hits(
+    on_battlefield: np.ndarray,
+    commander_cast_turn: np.ndarray,
+    combo_requirements: List[Dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    batch_n = on_battlefield.shape[0]
+    hit_mask = np.zeros(batch_n, dtype=bool)
+    reasons = np.array([""] * batch_n, dtype=object)
+    if not combo_requirements:
+        return hit_mask, reasons
+
+    for requirement in combo_requirements:
+        requirement_hit = np.ones(batch_n, dtype=bool)
+        for idxs in requirement["groups"]:
+            requirement_hit &= on_battlefield[:, idxs].any(axis=1)
+        if requirement["requires_commander"]:
+            requirement_hit &= commander_cast_turn > 0
+        new_hit = requirement_hit & ~hit_mask
+        if new_hit.any():
+            hit_mask[new_hit] = True
+            reasons[new_hit] = (
+                "All required cards for the CommanderSpellbook combo are live: "
+                + ", ".join(requirement["cards"])
+                + "."
+            )
+    return hit_mask, reasons
+
+
 def _expand_deck(cards: List[dict]) -> _DeckArrays:
     names: List[str] = []
     mana_values: List[int] = []
+    powers: List[float] = []
     flags = {
         "is_land": [],
         "is_ramp": [],
         "is_fast_mana": [],
         "is_early_action": [],
         "is_fixing": [],
+        "is_permanent": [],
+        "is_creature": [],
+        "is_artifact": [],
         "is_draw": [],
         "is_engine": [],
         "is_payoff": [],
@@ -88,27 +238,65 @@ def _expand_deck(cards: List[dict]) -> _DeckArrays:
         "is_removal": [],
         "is_counter": [],
         "is_stax": [],
+        "has_haste": [],
+        "infect": [],
+        "proliferate": [],
     }
+    evasion_scores: List[float] = []
+    combat_buffs: List[float] = []
+    commander_buffs: List[float] = []
+    token_attack_powers: List[float] = []
+    token_bodies: List[float] = []
+    extra_combats: List[float] = []
+    toxics: List[float] = []
+    burn_values: List[float] = []
+    repeatable_burns: List[float] = []
+    mill_values: List[float] = []
+    repeatable_mills: List[float] = []
+    alt_win_codes: List[int] = []
 
     for c in cards:
         qty = int(c.get("qty", 1))
         name = str(c.get("name", "")).strip()
         tags = set(c.get("tags", []) or [])
         mv = int(c.get("mana_value", 2))
+        power = float(c.get("power") or 0.0)
         is_land = "#Land" in tags
         is_ramp = "#Ramp" in tags
         is_fixing = "#Fixing" in tags and (is_land or is_ramp)
         is_fast = "#FastMana" in tags or (is_ramp and mv <= 2)
         is_early_action = mv <= 2 and bool(tags & {"#Ramp", "#Draw", "#Setup"})
+        is_permanent = bool(c.get("is_permanent", False))
+        is_creature = bool(c.get("is_creature", False))
+        is_artifact = "artifact" in str(c.get("type_line") or "").lower()
+        has_haste = bool(c.get("has_haste", False))
+        infect = bool(c.get("infect", False))
+        proliferate = bool(c.get("proliferate", False))
+        evasion = float(c.get("evasion_score") or 0.0)
+        combat_buff = float(c.get("combat_buff") or 0.0)
+        commander_buff = float(c.get("commander_buff") or 0.0)
+        token_power = float(c.get("token_attack_power") or 0.0)
+        token_body_count = float(c.get("token_bodies") or 0.0)
+        extra_combat = float(c.get("extra_combat_factor") or 1.0)
+        toxic = float(c.get("toxic") or 0.0)
+        burn_value = float(c.get("burn_value") or 0.0)
+        repeatable_burn = float(c.get("repeatable_burn") or 0.0)
+        mill_value = float(c.get("mill_value") or 0.0)
+        repeatable_mill = float(c.get("repeatable_mill") or 0.0)
+        alt_win_code = _ALT_WIN_CODE.get(c.get("alt_win_kind"), 0)
 
         for _ in range(max(1, qty)):
             names.append(name)
             mana_values.append(mv)
+            powers.append(power)
             flags["is_land"].append(is_land)
             flags["is_ramp"].append(is_ramp)
             flags["is_fast_mana"].append(is_fast)
             flags["is_early_action"].append(is_early_action)
             flags["is_fixing"].append(is_fixing)
+            flags["is_permanent"].append(is_permanent)
+            flags["is_creature"].append(is_creature)
+            flags["is_artifact"].append(is_artifact)
             flags["is_draw"].append("#Draw" in tags)
             flags["is_engine"].append("#Engine" in tags)
             flags["is_payoff"].append("#Payoff" in tags)
@@ -119,15 +307,34 @@ def _expand_deck(cards: List[dict]) -> _DeckArrays:
             flags["is_removal"].append("#Removal" in tags)
             flags["is_counter"].append("#Counter" in tags)
             flags["is_stax"].append("#Stax" in tags)
+            flags["has_haste"].append(has_haste)
+            flags["infect"].append(infect)
+            flags["proliferate"].append(proliferate)
+            evasion_scores.append(evasion)
+            combat_buffs.append(combat_buff)
+            commander_buffs.append(commander_buff)
+            token_attack_powers.append(token_power)
+            token_bodies.append(token_body_count)
+            extra_combats.append(extra_combat)
+            toxics.append(toxic)
+            burn_values.append(burn_value)
+            repeatable_burns.append(repeatable_burn)
+            mill_values.append(mill_value)
+            repeatable_mills.append(repeatable_mill)
+            alt_win_codes.append(alt_win_code)
 
     return _DeckArrays(
         names=names,
         mana_value=np.array(mana_values, dtype=np.int16),
+        power=np.array(powers, dtype=np.float32),
         is_land=np.array(flags["is_land"], dtype=bool),
         is_ramp=np.array(flags["is_ramp"], dtype=bool),
         is_fast_mana=np.array(flags["is_fast_mana"], dtype=bool),
         is_early_action=np.array(flags["is_early_action"], dtype=bool),
         is_fixing=np.array(flags["is_fixing"], dtype=bool),
+        is_permanent=np.array(flags["is_permanent"], dtype=bool),
+        is_creature=np.array(flags["is_creature"], dtype=bool),
+        is_artifact=np.array(flags["is_artifact"], dtype=bool),
         is_draw=np.array(flags["is_draw"], dtype=bool),
         is_engine=np.array(flags["is_engine"], dtype=bool),
         is_payoff=np.array(flags["is_payoff"], dtype=bool),
@@ -138,6 +345,21 @@ def _expand_deck(cards: List[dict]) -> _DeckArrays:
         is_removal=np.array(flags["is_removal"], dtype=bool),
         is_counter=np.array(flags["is_counter"], dtype=bool),
         is_stax=np.array(flags["is_stax"], dtype=bool),
+        has_haste=np.array(flags["has_haste"], dtype=bool),
+        evasion_score=np.array(evasion_scores, dtype=np.float32),
+        combat_buff=np.array(combat_buffs, dtype=np.float32),
+        commander_buff=np.array(commander_buffs, dtype=np.float32),
+        token_attack_power=np.array(token_attack_powers, dtype=np.float32),
+        token_bodies=np.array(token_bodies, dtype=np.float32),
+        extra_combat_factor=np.array(extra_combats, dtype=np.float32),
+        infect=np.array(flags["infect"], dtype=bool),
+        toxic=np.array(toxics, dtype=np.float32),
+        proliferate=np.array(flags["proliferate"], dtype=bool),
+        burn_value=np.array(burn_values, dtype=np.float32),
+        repeatable_burn=np.array(repeatable_burns, dtype=np.float32),
+        mill_value=np.array(mill_values, dtype=np.float32),
+        repeatable_mill=np.array(repeatable_mills, dtype=np.float32),
+        alt_win_code=np.array(alt_win_codes, dtype=np.int16),
     )
 
 
@@ -216,6 +438,7 @@ def _cast_stage(
     mana_value: np.ndarray,
     actions_this_turn: np.ndarray,
     send_to_battlefield: bool = True,
+    battlefield_mask: np.ndarray | None = None,
     max_loops: int = 24,
 ) -> np.ndarray:
     batch_n, deck_n = in_hand.shape
@@ -242,7 +465,12 @@ def _cast_stage(
         actions_this_turn[r] += 1
         chosen_any[r] = True
         if send_to_battlefield:
-            on_battlefield[r, c] = True
+            if battlefield_mask is None:
+                on_battlefield[r, c] = True
+            else:
+                keep = battlefield_mask[c]
+                if keep.any():
+                    on_battlefield[r[keep], c[keep]] = True
 
     return chosen_any
 
@@ -259,6 +487,8 @@ def run_simulation_batch_vectorized(
     bracket: int = 3,
     primary_wincons: List[str] | None = None,
     color_identity_size: int = 3,
+    combo_variants: List[Dict] | None = None,
+    combo_source_live: bool = False,
     batch_size: int = 512,
 ) -> Dict:
     if runs <= 0:
@@ -268,18 +498,24 @@ def run_simulation_batch_vectorized(
     selected_wincons = _normalize_wincons(primary_wincons)
     colors_req = max(0, int(color_identity_size))
 
-    deck = _expand_deck(cards)
+    main_cards, commander_card = _separate_sim_cards(cards, commander)
+    deck = _expand_deck(main_cards)
     deck_size = deck.mana_value.size
     if deck_size == 0:
         return {"summary": {"runs": runs, "seed": seed, "policy": policy, "turn_limit": turn_limit}}
 
     rng = np.random.default_rng(int(seed))
     cmd_mana_value = None
-    if commander:
-        for i, n in enumerate(deck.names):
-            if n == commander:
-                cmd_mana_value = int(deck.mana_value[i])
-                break
+    cmd_power = 0.0
+    cmd_has_haste = False
+    cmd_evasion = 0.0
+    if commander_card is not None:
+        cmd_mana_value = int(commander_card.get("mana_value", 0) or 0)
+        cmd_power = float(commander_card.get("power") or 0.0)
+        cmd_has_haste = bool(commander_card.get("has_haste", False))
+        cmd_evasion = float(commander_card.get("evasion_score") or 0.0)
+    normalized_combo_variants = _normalize_combo_variants(combo_variants)
+    combo_requirements = _prepare_combo_requirements(deck.names, normalized_combo_variants, commander)
 
     all_mana = []
     all_lands = []
@@ -302,6 +538,7 @@ def run_simulation_batch_vectorized(
     all_mulligan_logs: List[List[dict]] = []
     all_win_turn = []
     all_achieved = []
+    all_win_reason = []
 
     decision_samples = []
     dead_counter = Counter()
@@ -336,6 +573,13 @@ def run_simulation_batch_vectorized(
         ramp_online_turn = np.zeros(batch_n, dtype=np.int16)
         win_turn = np.zeros(batch_n, dtype=np.int16)
         achieved_wincon = np.array([""] * batch_n, dtype=object)
+        achieved_reason = np.array([""] * batch_n, dtype=object)
+        graveyard_count = np.zeros(batch_n, dtype=np.int16)
+        combat_damage_total = np.zeros(batch_n, dtype=np.float32)
+        commander_damage_total = np.zeros(batch_n, dtype=np.float32)
+        poison_total = np.zeros(batch_n, dtype=np.float32)
+        burn_total = np.zeros(batch_n, dtype=np.float32)
+        mill_total = np.zeros(batch_n, dtype=np.float32)
 
         mana_by_turn = np.zeros((batch_n, turn_limit), dtype=np.int16)
         lands_by_turn = np.zeros((batch_n, turn_limit), dtype=np.int16)
@@ -388,6 +632,7 @@ def run_simulation_batch_vectorized(
             available_mana = (on_battlefield & (deck.is_land[np.newaxis, :] | deck.is_ramp[np.newaxis, :])).sum(axis=1).astype(np.int16)
 
             # 2) ramp stage
+            pre_ramp_cast = cast_mask.copy()
             ramp_casted = _cast_stage(
                 role_mask=(deck.is_ramp | deck.is_fast_mana),
                 stage_priority=ramp_priority,
@@ -398,11 +643,15 @@ def run_simulation_batch_vectorized(
                 mana_value=deck.mana_value,
                 actions_this_turn=actions_this_turn,
                 send_to_battlefield=True,
+                battlefield_mask=deck.is_permanent,
             )
+            ramp_delta = cast_mask & ~pre_ramp_cast
+            graveyard_count += (ramp_delta & ~deck.is_permanent[np.newaxis, :]).sum(axis=1).astype(np.int16)
             if ramp_casted.any():
                 cast_tutor_turn |= False
 
             # 3) draw stage
+            pre_draw_cast = cast_mask.copy()
             draw_casted = _cast_stage(
                 role_mask=deck.is_draw,
                 stage_priority=draw_priority,
@@ -413,7 +662,10 @@ def run_simulation_batch_vectorized(
                 mana_value=deck.mana_value,
                 actions_this_turn=actions_this_turn,
                 send_to_battlefield=True,
+                battlefield_mask=deck.is_permanent,
             )
+            draw_delta = cast_mask & ~pre_draw_cast
+            graveyard_count += (draw_delta & ~deck.is_permanent[np.newaxis, :]).sum(axis=1).astype(np.int16)
             new_draw = (draw_engine_turn == 0) & draw_casted
             draw_engine_turn[new_draw] = turn
 
@@ -442,8 +694,10 @@ def run_simulation_batch_vectorized(
                 mana_value=deck.mana_value,
                 actions_this_turn=actions_this_turn,
                 send_to_battlefield=True,
+                battlefield_mask=deck.is_permanent,
             )
             new_cast = cast_mask & ~pre_cast
+            graveyard_count += (new_cast & ~deck.is_permanent[np.newaxis, :]).sum(axis=1).astype(np.int16)
             if new_cast.any():
                 cast_combo_turn = (new_cast & deck.is_combo[np.newaxis, :]).any(axis=1)
                 cast_tutor_turn = (new_cast & deck.is_tutor[np.newaxis, :]).any(axis=1)
@@ -467,12 +721,15 @@ def run_simulation_batch_vectorized(
                         send_to_battlefield=False,
                         max_loops=1,
                     )
+                    interaction_delta = cast_mask & ~pre_cast_int
+                    graveyard_count += interaction_delta.sum(axis=1).astype(np.int16)
                     # Keep usage deterministic; cast only in rows with event.
                     reverted = ~threat_event
                     if reverted.any():
                         delta = cast_mask & ~pre_cast_int
                         cast_mask[reverted] = pre_cast_int[reverted]
                         in_hand[reverted] |= delta[reverted]
+                        graveyard_count[reverted] -= delta[reverted].sum(axis=1).astype(np.int16)
                         actions_this_turn[reverted] -= delta[reverted].sum(axis=1).astype(np.int16)
                         # no mana rewind needed for reverted rows because we only use this for metrics downstream
 
@@ -496,8 +753,53 @@ def run_simulation_batch_vectorized(
 
             engine_count = (on_battlefield & deck.is_engine[np.newaxis, :]).sum(axis=1)
             draw_count = (on_battlefield & deck.is_draw[np.newaxis, :]).sum(axis=1)
+            current_turn_cast = cast_by_turn[:, t, :]
+            summoning_sick = current_turn_cast & deck.is_creature[np.newaxis, :] & ~deck.has_haste[np.newaxis, :]
+            attackers = on_battlefield & deck.is_creature[np.newaxis, :] & ~summoning_sick
+            attacker_count = attackers.sum(axis=1).astype(np.float32)
+            base_attack_power = (attackers * deck.power[np.newaxis, :]).sum(axis=1)
+            combat_buff_total = (on_battlefield * deck.combat_buff[np.newaxis, :]).sum(axis=1)
+            commander_buff_total = (on_battlefield * deck.commander_buff[np.newaxis, :]).sum(axis=1)
+            eligible_token_sources = on_battlefield & ~(current_turn_cast & ~deck.has_haste[np.newaxis, :])
+            token_power_total = (eligible_token_sources * deck.token_attack_power[np.newaxis, :]).sum(axis=1)
+            token_bodies_total = (eligible_token_sources * deck.token_bodies[np.newaxis, :]).sum(axis=1)
+            attack_body_count = attacker_count + token_bodies_total
+            extra_combat = np.where(on_battlefield, deck.extra_combat_factor[np.newaxis, :], 1.0).max(axis=1)
+            avg_evasion = np.divide(
+                (attackers * deck.evasion_score[np.newaxis, :]).sum(axis=1),
+                np.maximum(1.0, attacker_count),
+            )
+            evasion_factor = np.minimum(1.0, 0.55 + avg_evasion)
+            combat_damage_turn = (base_attack_power + token_power_total + combat_buff_total * attack_body_count) * extra_combat * evasion_factor
+            commander_can_attack = (commander_cast_turn > 0) & ((commander_cast_turn < turn) | ((commander_cast_turn == turn) & cmd_has_haste))
+            commander_damage_turn = np.where(
+                commander_can_attack,
+                np.maximum(0.0, cmd_power + commander_buff_total + combat_buff_total) * extra_combat * min(1.0, 0.55 + cmd_evasion),
+                0.0,
+            )
+            poison_turn = (
+                ((attackers & deck.infect[np.newaxis, :]) * deck.power[np.newaxis, :]).sum(axis=1)
+                + ((attackers * deck.toxic[np.newaxis, :]).sum(axis=1))
+            ) * extra_combat * evasion_factor
+            poison_turn += np.where((poison_total > 0) & (current_turn_cast & deck.proliferate[np.newaxis, :]).any(axis=1), 1.0, 0.0)
+            burn_turn = (
+                (current_turn_cast * deck.burn_value[np.newaxis, :]).sum(axis=1)
+                + ((on_battlefield & ~current_turn_cast) * deck.repeatable_burn[np.newaxis, :]).sum(axis=1)
+            )
+            mill_turn = (
+                (current_turn_cast * deck.mill_value[np.newaxis, :]).sum(axis=1)
+                + ((on_battlefield & ~current_turn_cast) * deck.repeatable_mill[np.newaxis, :]).sum(axis=1)
+            )
             progress = mana_total * 0.5 + draw_count * 0.8 + engine_count * 1.0 + np.where(commander_cast_turn > 0, 1.2, 0.0)
+            progress += np.minimum(6.0, combat_damage_turn / 10.0)
+            progress += np.minimum(5.0, commander_damage_turn / 6.0)
+            progress += np.minimum(4.0, burn_total / 10.0)
             plan_progress[:, t] = progress
+            combat_damage_total += combat_damage_turn.astype(np.float32)
+            commander_damage_total += commander_damage_turn.astype(np.float32)
+            poison_total += poison_turn.astype(np.float32)
+            burn_total += burn_turn.astype(np.float32)
+            mill_total += mill_turn.astype(np.float32)
 
             is_win_phase = cast_payoff_turn
             is_engine_phase = (~is_win_phase) & ((engine_count >= 1) | (draw_engine_turn > 0))
@@ -508,28 +810,76 @@ def run_simulation_batch_vectorized(
 
             # Win detection in selected order.
             payoff_count = (on_battlefield & (deck.is_payoff | deck.is_wincon)[np.newaxis, :]).sum(axis=1)
+            combo_count = (on_battlefield & deck.is_combo[np.newaxis, :]).sum(axis=1)
             counter_or_stax = (on_battlefield & (deck.is_counter | deck.is_stax)[np.newaxis, :]).any(axis=1)
+            artifact_count = (on_battlefield & deck.is_artifact[np.newaxis, :]).sum(axis=1)
+            creature_count = (on_battlefield & deck.is_creature[np.newaxis, :]).sum(axis=1).astype(np.float32) + token_bodies_total
+            library_size = deck_size - library_pos
+            hand_size = in_hand.sum(axis=1)
             unresolved = win_turn == 0
             for w in selected_wincons:
                 if not unresolved.any():
                     break
                 if w == "Combo":
-                    cond = cast_combo_turn | (cast_tutor_turn & (payoff_count >= 2) & (turn >= 4))
+                    if combo_source_live:
+                        cond, reasons = _detect_live_combo_hits(on_battlefield, commander_cast_turn, combo_requirements)
+                    else:
+                        cond = (
+                            (cast_combo_turn & cast_wincon_turn & (payoff_count >= 2) & (turn >= 5))
+                            | (
+                                (cast_combo_turn | cast_tutor_turn)
+                                & (combo_count >= 2)
+                                & (payoff_count >= 3)
+                                & (engine_count >= 1)
+                                & (mana_total >= 7)
+                                & (turn >= 6)
+                            )
+                        )
+                        reasons = np.where(
+                            cast_combo_turn & cast_wincon_turn & (payoff_count >= 2) & (turn >= 5),
+                            "Combo piece plus explicit win piece resolved with enough support already in play.",
+                            "Multiple combo and payoff pieces with an active engine crossed the deterministic combo threshold.",
+                        )
                 elif w == "Combat":
-                    cond = (turn >= 5) & (payoff_count >= 2)
+                    cond = (combat_damage_total >= 90) | ((combat_damage_turn >= 36) & (turn >= 5))
+                    reasons = np.array([f"Projected combat pressure reached {float(v):.1f} effective damage." for v in combat_damage_total], dtype=object)
                 elif w == "Commander Damage":
-                    cond = (commander_cast_turn > 0) & (turn >= (commander_cast_turn + 2)) & (mana_total >= 6)
+                    cond = commander_damage_total >= 21
+                    reasons = np.array([f"Projected commander damage reached {float(v):.1f}." for v in commander_damage_total], dtype=object)
+                elif w == "Poison":
+                    cond = poison_total >= 10
+                    reasons = np.array([f"Projected poison counters reached {float(v):.1f}." for v in poison_total], dtype=object)
+                elif w == "Drain/Burn":
+                    cond = burn_total >= 40
+                    reasons = np.array([f"Noncombat damage/life-loss lines reached {float(v):.1f} damage." for v in burn_total], dtype=object)
+                elif w == "Mill":
+                    cond = mill_total >= 90
+                    reasons = np.array([f"Mill lines reached {float(v):.1f} cards." for v in mill_total], dtype=object)
                 elif w == "Control Lock":
                     cond = (turn >= 6) & (engine_count >= 2) & counter_or_stax
+                    reasons = np.full(batch_n, "Lock pieces and engines combined into a board state opponents are unlikely to beat.", dtype=object)
                 elif w == "Alt Win":
-                    cond = cast_wincon_turn & (turn >= 5)
+                    generic_alt = (current_turn_cast & (deck.alt_win_code[np.newaxis, :] == 1)).any(axis=1)
+                    upkeep_alt = (
+                        ((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 2)).any(axis=1)
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 3)).any(axis=1) & (artifact_count >= 20))
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 4)).any(axis=1) & (creature_count >= 20))
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 5)).any(axis=1) & (graveyard_count >= 20))
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 6)).any(axis=1) & (library_size <= 2))
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 7)).any(axis=1) & (library_size <= 0))
+                        | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 8)).any(axis=1) & (hand_size <= 0))
+                    )
+                    cond = generic_alt | upkeep_alt
+                    reasons = np.full(batch_n, "An explicit alternate-win condition is live.", dtype=object)
                 else:
                     cond = np.zeros(batch_n, dtype=bool)
+                    reasons = np.array([""] * batch_n, dtype=object)
 
                 hit = unresolved & cond
                 if hit.any():
                     win_turn[hit] = turn
                     achieved_wincon[hit] = w
+                    achieved_reason[hit] = reasons[hit]
                     unresolved = win_turn == 0
 
             can_ramp = (ramp_online_turn == 0) & (mana_total >= 4)
@@ -573,6 +923,7 @@ def run_simulation_batch_vectorized(
         all_mulligan_logs.extend(mulligan_logs)
         all_win_turn.append(win_turn)
         all_achieved.append(achieved_wincon)
+        all_win_reason.append(achieved_reason)
         run_offset += batch_n
 
     mana = np.vstack(all_mana)
@@ -595,6 +946,7 @@ def run_simulation_batch_vectorized(
     cast_by_turn_all = np.concatenate(all_cast_by_turn, axis=0)
     win_turn = np.concatenate(all_win_turn)
     achieved = np.concatenate(all_achieved)
+    achieved_reason = np.concatenate(all_win_reason)
 
     p_mana4_t3 = float((mana[:, 2] >= 4).mean()) if turn_limit >= 3 else 0.0
     p_mana5_t4 = float((mana[:, 3] >= 5).mean()) if turn_limit >= 4 else 0.0
@@ -738,6 +1090,7 @@ def run_simulation_batch_vectorized(
                     "mana_total": int(mana[idx, t]),
                     "phase": phase,
                     "wincon_hit": str(achieved[idx]) if wt == (t + 1) and achieved[idx] else None,
+                    "win_reason": str(achieved_reason[idx]) if wt == (t + 1) and achieved_reason[idx] else None,
                 }
             )
 
@@ -748,6 +1101,7 @@ def run_simulation_batch_vectorized(
                 "seed_token": f"{seed}:{idx}",
                 "win_turn": wt,
                 "wincon": str(achieved[idx]) if achieved[idx] else None,
+                "win_reason": str(achieved_reason[idx]) if achieved_reason[idx] else None,
                 "mulligans_taken": int(mulligans[idx]),
                 "mulligan_steps": mull_steps,
                 "opening_hand": opening_names,
@@ -768,6 +1122,7 @@ def run_simulation_batch_vectorized(
         "seed": int(seed),
         "policy": policy,
         "turn_limit": turn_limit,
+        "selected_wincons": selected_wincons,
         "backend_used": "vectorized",
         "batch_size": int(batch_size),
         "vectorization_stats": {
@@ -813,6 +1168,10 @@ def run_simulation_batch_vectorized(
         },
         "color_profile": {
             "color_identity_size": color_identity_size,
+        },
+        "combo_detection": {
+            "source_live": combo_source_live,
+            "matched_variants": len(normalized_combo_variants),
         },
     }
 

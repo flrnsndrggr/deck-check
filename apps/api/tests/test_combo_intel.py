@@ -66,6 +66,51 @@ def test_combo_service_cache_deterministic(monkeypatch):
     assert first["matched_variants"][0]["variant_id"] == "10"
 
 
+def test_combo_service_keeps_full_complete_catalog(monkeypatch):
+    from app.services import commanderspellbook as csb
+
+    monkeypatch.setattr(csb, "redis_conn", _FakeRedis())
+    svc = ComboIntelService()
+
+    fake_rows = []
+    for idx in range(12):
+        fake_rows.append(
+            {
+                "id": idx + 1,
+                "description": f"Line {idx + 1}",
+                "uses": [{"card": {"name": "A"}}, {"card": {"name": f"B{idx + 1}"}}],
+            }
+        )
+
+    monkeypatch.setattr(svc, "_fetch_variants_for_cards", lambda cards, limit=200: fake_rows)
+    out = svc.get_combo_intel(["A"] + [f"B{i + 1}" for i in range(12)], commander="Cmdr")
+    assert len(out["matched_variants"]) == 12
+
+
+def test_combo_service_excludes_near_miss_lines(monkeypatch):
+    from app.services import commanderspellbook as csb
+
+    monkeypatch.setattr(csb, "redis_conn", _FakeRedis())
+    svc = ComboIntelService()
+    fake_rows = [
+        {
+            "id": 10,
+            "description": "Complete line",
+            "uses": [{"card": {"name": "A"}}, {"card": {"name": "B"}}],
+        },
+        {
+            "id": 11,
+            "description": "Near miss line",
+            "uses": [{"card": {"name": "A"}}, {"card": {"name": "C"}}],
+        },
+    ]
+
+    monkeypatch.setattr(svc, "_fetch_variants_for_cards", lambda cards, limit=200: fake_rows)
+    out = svc.get_combo_intel(["A", "B"], commander="Cmdr")
+    assert [v["variant_id"] for v in out["matched_variants"]] == ["10"]
+    assert out["near_miss_variants"] == []
+
+
 def test_analyzer_includes_combo_intel(monkeypatch):
     cards = [
         CardEntry(qty=1, name="Card A", section="deck", tags=["#Combo", "#Engine"]),
