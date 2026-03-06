@@ -530,27 +530,28 @@ def run_sim(req: SimRunRequest):
 
 
 @router.get("/sim/{job_id}", response_model=SimJobResponse)
-def get_sim(job_id: str, db: Session = Depends(get_db)):
-    row = db.execute(select(SimJob).where(SimJob.job_id == job_id)).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+def get_sim(job_id: str):
+    with SessionLocal() as db:
+        row = db.execute(select(SimJob).where(SimJob.job_id == job_id)).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
 
-    if row.status == "done" and row.result:
-        summary = row.result.get("summary", {})
-        db.add(
-            RunRecord(
-                seed=row.payload.get("seed", 42),
-                policy=row.payload.get("policy", "auto"),
-                turn_limit=row.payload.get("turn_limit", 8),
-                bracket=row.payload.get("bracket", 3),
-                template_preset=row.payload.get("template", "balanced"),
-                config={"job_id": job_id, **row.payload},
-                summary=summary,
+        if row.status == "done" and row.result:
+            summary = row.result.get("summary", {})
+            db.add(
+                RunRecord(
+                    seed=row.payload.get("seed", 42),
+                    policy=row.payload.get("policy", "auto"),
+                    turn_limit=row.payload.get("turn_limit", 8),
+                    bracket=row.payload.get("bracket", 3),
+                    template_preset=row.payload.get("template", "balanced"),
+                    config={"job_id": job_id, **row.payload},
+                    summary=summary,
+                )
             )
-        )
-        db.commit()
+            db.commit()
 
-    return SimJobResponse(job_id=job_id, status=row.status, result=row.result or {})
+        return SimJobResponse(job_id=job_id, status=row.status, result=row.result or {})
 
 
 @router.post("/analyze")
