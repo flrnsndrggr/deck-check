@@ -5,7 +5,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from statistics import median
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 from app.schemas.deck import CardEntry
 from app.services.edhrec import EDHRecService
@@ -121,6 +121,8 @@ MANA_LABELS = {
     "G": "Green",
     "C": "Colorless",
 }
+
+TYPE_LINE_SPLIT_RE = re.compile(r"\s+[—-]\s+")
 
 DECK_NAME_THEME_HOOKS = {
     "#Artifacts": ["Overclock", "Clockwork", "Chrome Sermon"],
@@ -963,6 +965,93 @@ def _card_matches_role(card: Dict, role: str) -> bool:
     return True
 
 
+def _candidate_type_buckets(card: Dict) -> tuple[set[str], set[str]]:
+    type_line = str(card.get("type_line") or "").lower().replace("—", " — ").strip()
+    parts = TYPE_LINE_SPLIT_RE.split(type_line, maxsplit=1)
+    left = {token for token in re.split(r"\s+", parts[0]) if token}
+    right = {token for token in re.split(r"\s+", parts[1]) if token} if len(parts) > 1 else set()
+    return left, right
+
+
+def _package_fit_score(card: Dict, type_profile: Dict | None) -> tuple[float, List[str]]:
+    if not type_profile:
+        return 0.0, []
+
+    left, right = _candidate_type_buckets(card)
+    card_types = {
+        str(row.get("name", "")).lower(): int(row.get("count", 0) or 0)
+        for row in (type_profile.get("card_types") or [])
+    }
+    dominant = type_profile.get("dominant_creature_subtype") or {}
+    dominant_name = str(dominant.get("name") or "").lower()
+
+    score = 0.0
+    reasons: List[str] = []
+
+    if dominant_name and dominant.get("count", 0) >= 6 and dominant_name in right:
+        score += 0.45
+        reasons.append(f"Matches the deck's main subtype package ({dominant.get('name')}).")
+
+    if card_types.get("artifact", 0) >= 12 and "artifact" in left:
+        score += 0.2
+        reasons.append("Fits the deck's artifact-heavy shell.")
+    if card_types.get("enchantment", 0) >= 10 and "enchantment" in left:
+        score += 0.2
+        reasons.append("Fits the deck's enchantment-heavy shell.")
+
+    subtype_counts = {
+        str(row.get("name", "")).lower(): int(row.get("count", 0) or 0)
+        for row in (type_profile.get("subtypes") or [])
+    }
+    if subtype_counts.get("equipment", 0) >= 4 and "equipment" in right:
+        score += 0.3
+        reasons.append("Supports the existing Equipment package.")
+    if subtype_counts.get("aura", 0) >= 4 and "aura" in right:
+        score += 0.28
+        reasons.append("Supports the existing Aura package.")
+    if subtype_counts.get("shrine", 0) >= 3 and "shrine" in right:
+        score += 0.35
+        reasons.append("Supports the existing Shrine package.")
+    if subtype_counts.get("background", 0) >= 1 and "background" in right:
+        score += 0.25
+        reasons.append("Matches the command package's Background signal.")
+
+    return score, reasons
+
+
+def _blended_edhrec_payload(commanders: Sequence[str] | None, limit: int = 140) -> Dict[str, Dict]:
+    names = [str(name).strip() for name in (commanders or []) if str(name or "").strip()]
+    if not names:
+        return {}
+
+    svc = EDHRecService()
+    blended: Dict[str, Dict] = {}
+    for idx, commander_name in enumerate(names):
+        payload = svc.get_commander_cards(commander_name, limit=limit) or {}
+        for rank, card in enumerate(payload.get("cards") or []):
+            name = card.get("name")
+            if not name:
+                continue
+            entry = blended.setdefault(
+                name,
+                {
+                    "name": name,
+                    "edhrec_score": 0.0,
+                    "appearances": 0,
+                    "best_rank": rank,
+                    "commanders": [],
+                },
+            )
+            entry["edhrec_score"] = max(float(entry.get("edhrec_score") or 0.0), float(card.get("edhrec_score") or 0.0))
+            entry["appearances"] = int(entry.get("appearances") or 0) + 1
+            entry["best_rank"] = min(int(entry.get("best_rank") or rank), rank)
+            commander_list = list(entry.get("commanders") or [])
+            if commander_name not in commander_list:
+                commander_list.append(commander_name)
+            entry["commanders"] = commander_list
+    return blended
+
+
 def _candidate_allowed(
     card: Dict,
     commander_ci_set: set[str],
@@ -1030,14 +1119,19 @@ def suggest_adds(
     bracket: int,
     budget_max_usd: float | None = None,
     commander: str | None = None,
+    commanders: Sequence[str] | None = None,
+    type_profile: Dict | None = None,
 ) -> List[Dict]:
     svc = CardDataService()
     out: List[Dict] = []
     commander_ci_set = set((commander_ci or "").upper())
     deck_names = {c.name for c in cards if c.section in {"deck", "commander"}}
-    edhrec_payload = EDHRecService().get_commander_cards(commander, limit=140) if commander else {"cards": []}
-    edhrec_rank = {x.get("name"): idx for idx, x in enumerate(edhrec_payload.get("cards", []))}
-    edhrec_names = [x.get("name") for x in (edhrec_payload.get("cards") or []) if x.get("name")]
+    commander_pool = [str(name).strip() for name in (commanders or []) if str(name or "").strip()]
+    if not commander_pool and commander:
+        commander_pool = [commander]
+    edhrec_payload = _blended_edhrec_payload(commander_pool, limit=140)
+    edhrec_rank = {name: data.get("best_rank", 999) for name, data in edhrec_payload.items()}
+    edhrec_names = list(edhrec_payload.keys())
     edhrec_map = svc.get_cards_by_name(edhrec_names[:100]) if edhrec_names else {}
 
     role_to_query = {
@@ -1067,16 +1161,19 @@ def suggest_adds(
             allowed, usd = _candidate_allowed(cand, commander_ci_set, budget_max_usd)
             if not allowed or not _card_matches_role(cand, role):
                 continue
+            package_score, package_reasons = _package_fit_score(cand, type_profile)
             role_candidates.append(
                 {
                     "card": cand_name,
                     "fills": role,
-                    "why": f"Improves {role} density for current template target.",
+                    "why": " ".join(
+                        [f"Improves {role} density for current template target."] + package_reasons[:1]
+                    ).strip(),
                     "bracket_impact": "Check Game Changer status before inclusion.",
                     "is_game_changer": False,
                     "budget_note": f"{usd:.2f}" if isinstance(usd, (int, float)) else "n/a",
                     "source": "heuristic",
-                    "_score": 1.0,
+                    "_score": 1.0 + package_score,
                 }
             )
 
@@ -1090,12 +1187,19 @@ def suggest_adds(
             if not allowed:
                 continue
             rank = edhrec_rank.get(name, 999)
-            score = 0.82 - min(0.6, rank * 0.0025)
+            shared_count = int((edhrec_payload.get(name) or {}).get("appearances") or 0)
+            package_score, package_reasons = _package_fit_score(card, type_profile)
+            score = 0.72 - min(0.52, rank * 0.0025) + min(0.22, shared_count * 0.12) + package_score
+            shared_text = ""
+            if shared_count >= 2:
+                shared_text = " It is recommended across both commanders in this pairing."
             role_candidates.append(
                 {
                     "card": name,
                     "fills": role,
-                    "why": f"Matches {role} gap and appears frequently in EDHREC commander recommendations.",
+                    "why": " ".join(
+                        [f"Matches {role} gap and appears in EDHREC commander recommendations.{shared_text}".strip()] + package_reasons[:1]
+                    ).strip(),
                     "bracket_impact": "Check Game Changer status before inclusion.",
                     "is_game_changer": False,
                     "budget_note": f"{usd:.2f}" if isinstance(usd, (int, float)) else "n/a",
@@ -1795,7 +1899,17 @@ def analyze(
 
     cuts = _find_replaceable(cards, bottom)
     cuts = [c for c in cuts if c.get("card") not in commander_names]
-    adds = suggest_adds(cards, commander_ci, gaps, bracket, budget_max_usd=budget_max_usd, commander=commander)
+    commander_pool = [c.name for c in cards if c.section == "commander"]
+    adds = suggest_adds(
+        cards,
+        commander_ci,
+        gaps,
+        bracket,
+        budget_max_usd=budget_max_usd,
+        commander=commander,
+        commanders=commander_pool,
+        type_profile=type_profile,
+    )
     consistency_score = _consistency_score(sim_summary)
     health_summary = _health_summary(cards, rb, sim_summary, consistency_score, combo_intel=combo_intel)
 

@@ -48,16 +48,18 @@ type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 
 const TABS = [
   "Deck Analysis",
+  "Combos",
   "Lenses",
   "Role Breakdown",
   "Mana Base",
   "Goldfish Report",
-  "Fastet Wins",
+  "Fastest Wins",
   "Card Importance",
   "Optimization",
   "Primer",
   "Rules Watchouts",
 ] as const;
+const TAG_ONLY_TABS = ["Role Breakdown", "Combos", "Rules Watchouts"] as const;
 
 const THEME_OPTIONS: ThemeMode[] = ["dark", "light", "system"];
 
@@ -501,7 +503,6 @@ export default function HomePage() {
   const [moxfieldUrl, setMoxfieldUrl] = useState("");
   const [urlImportNotice, setUrlImportNotice] = useState<UrlImportNotice>(null);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Deck Analysis");
-  const [deckAnalysisView, setDeckAnalysisView] = useState<"Overview" | "Combos">("Overview");
   const [bracket, setBracket] = useState(3);
   const [policy, setPolicy] = useState("auto");
   const [simRuns, setSimRuns] = useState(2000);
@@ -519,6 +520,8 @@ export default function HomePage() {
   const [simRes, setSimRes] = useState<any>(null);
   const [analysis, setAnalysis] = useState<any>(null);
   const [guides, setGuides] = useState<any>(null);
+  const [comboRes, setComboRes] = useState<any>(null);
+  const [rulesWatchoutsRes, setRulesWatchoutsRes] = useState<any[]>([]);
   const [displayMap, setDisplayMap] = useState<Record<string, any>>({});
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [selectedCurveMv, setSelectedCurveMv] = useState<number | null>(null);
@@ -655,11 +658,16 @@ export default function HomePage() {
   const topAdds = (analysis?.adds || []).slice(0, 3);
   const roleGaps = (analysis?.missing_roles || []).slice(0, 4);
   const bracketViolations = analysis?.bracket_report?.violations || [];
-  const hasOutcomeResources = Boolean(tagRes || simRes || analysis || guides);
+  const hasAnalysisResources = Boolean(simRes || analysis || guides);
+  const availableTabs = useMemo(
+    () => (hasAnalysisResources ? [...TABS] : tagRes ? [...TAG_ONLY_TABS] : []),
+    [hasAnalysisResources, tagRes],
+  );
+  const hasOutcomeResources = availableTabs.length > 0;
   const winMetrics = simRes?.summary?.win_metrics || {};
   const uncertainty = simRes?.summary?.uncertainty || {};
   const fastestWins = simRes?.summary?.fastest_wins || [];
-  const comboIntel = analysis?.combo_intel || {};
+  const comboIntel = analysis?.combo_intel || comboRes || {};
   const comboComplete = comboIntel?.matched_variants || [];
   const comboNearMiss = comboIntel?.near_miss_variants || [];
   const intentSummary = analysis?.intent_summary || {};
@@ -690,7 +698,7 @@ export default function HomePage() {
   );
   const analysisProgressMeta = useMemo(() => analysisStatusMeta(status), [status]);
   const rulesWatchoutRows = useMemo(() => {
-    return (analysis?.rules_watchouts || [])
+    return ((analysis?.rules_watchouts || rulesWatchoutsRes || []) as any[])
       .map((w: any) => {
         const flags = Array.isArray(w?.complexity_flags) ? w.complexity_flags : [];
         const fallbackErrata = uniqueNonEmpty(
@@ -721,7 +729,7 @@ export default function HomePage() {
         };
       })
       .filter(Boolean);
-  }, [analysis]);
+  }, [analysis, rulesWatchoutsRes]);
   const selectedImportance = (analysis?.importance || []).find((x: any) => x.card === selectedCard);
   const selectedImpact = selectedCard ? (simRes?.summary?.card_impacts || {})[selectedCard] : null;
   const selectedDisplay = selectedCard ? cardDisplay(selectedCard) : {};
@@ -771,6 +779,31 @@ export default function HomePage() {
   }, [simRes, analysis]);
 
   const roleRows = useMemo(() => {
+    if (!analysis) {
+      const taggedCards = tagRes?.cards || [];
+      const roleCounts: Record<string, number> = {};
+      const cardsByRole: Record<string, { name: string; qty: number }[]> = {};
+      for (const card of taggedCards) {
+        if (!["deck", "commander"].includes(card?.section)) continue;
+        for (const role of card?.tags || []) {
+          roleCounts[role] = Number(roleCounts[role] || 0) + Number(card?.qty || 1);
+          cardsByRole[role] = cardsByRole[role] || [];
+          cardsByRole[role].push({ name: card.name, qty: Number(card.qty || 1) });
+        }
+      }
+      return Object.entries(roleCounts)
+        .map(([role, count]) => ({
+          role,
+          have: Number(count || 0),
+          minTarget: 0,
+          center: 0,
+          maxTarget: 0,
+          status: "tagged",
+          reason: "Tagged count from the current decklist. Run full analysis for adaptive targets and bracket-aware role guidance.",
+          cards: (cardsByRole[role] || []).sort((a, b) => Number(b.qty || 0) - Number(a.qty || 0) || String(a.name || "").localeCompare(String(b.name || ""))),
+        }))
+        .sort((a, b) => Number(b.have || 0) - Number(a.have || 0) || a.role.localeCompare(b.role));
+    }
     const roleCounts = analysis?.role_breakdown?.roles || {};
     const targetEntries = Object.entries(roleTargets || {}).map(([role, meta]: any) => {
       const have = Number(roleCounts?.[role] || 0);
@@ -811,6 +844,13 @@ export default function HomePage() {
       return a.role.localeCompare(b.role);
     });
   }, [analysis, roleTargets, roleCardsMap]);
+
+  useEffect(() => {
+    if (!hasOutcomeResources) return;
+    if (!availableTabs.includes(tab as any)) {
+      setTab(availableTabs[0] as (typeof TABS)[number]);
+    }
+  }, [availableTabs, hasOutcomeResources, tab]);
 
   function pct(v: unknown) {
     const n = typeof v === "number" ? v : 0;
@@ -1228,6 +1268,108 @@ export default function HomePage() {
     }
   }
 
+  async function parseAndTagDeck(runId: number) {
+    updateStatus("parsing");
+    const parsed = await requestJson(
+      "/api/decks/parse",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
+      },
+      "Deck parse",
+    );
+    if (activeRunRef.current !== runId) return null;
+    setParseRes(parsed);
+
+    updateStatus("tagging");
+    const tagged = await requestJson(
+      "/api/decks/tag",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, commanders: parsed.commanders || [], global_tags: true }),
+      },
+      "Deck tagging",
+    );
+    if (activeRunRef.current !== runId) return null;
+    setTagRes(tagged);
+    setDisplayMap(tagged.card_display || {});
+    const inferredWincons = inferWinconsFromTagged(tagged);
+    setDetectedWincons(inferredWincons);
+    return { parsed, tagged, inferredWincons };
+  }
+
+  async function runTagOnly() {
+    const runId = activeRunRef.current + 1;
+    activeRunRef.current = runId;
+    try {
+      setSimRes(null);
+      setAnalysis(null);
+      setGuides(null);
+      setComboRes(null);
+      setRulesWatchoutsRes([]);
+      setSelectedCard(null);
+      const prep = await parseAndTagDeck(runId);
+      if (!prep || activeRunRef.current !== runId) return;
+      const { parsed, tagged } = prep;
+
+      const commanderCards = (parsed.commanders || parsed.commander ? [parsed.commander].filter(Boolean).concat(parsed.commanders || []) : [])
+        .filter((name: string, index: number, arr: string[]) => arr.indexOf(name) === index);
+      const deckCardNames = (tagged.cards || [])
+        .filter((card: any) => ["deck", "commander"].includes(card?.section))
+        .map((card: any) => card?.name)
+        .filter((name: any) => typeof name === "string" && name.length > 0);
+
+      const [comboPayload, watchoutsPayload] = await Promise.all([
+        requestJson(
+          "/api/combos/intel",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              cards: deckCardNames,
+              commander: parsed.commander,
+              commanders: commanderCards,
+            }),
+          },
+          "Combo catalog",
+        ).catch(() => ({ matched_variants: [], near_miss_variants: [], combo_support_score: 0, warnings: [] })),
+        requestJson(
+          "/api/rules/watchouts",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              cards: parsed.cards,
+              commander: parsed.commander,
+              commanders: commanderCards,
+            }),
+          },
+          "Rules watchouts",
+        ).catch(() => []),
+      ]);
+      if (activeRunRef.current !== runId) return;
+      setComboRes(comboPayload);
+      setRulesWatchoutsRes(Array.isArray(watchoutsPayload) ? watchoutsPayload : []);
+
+      const comboCards = [
+        ...((comboPayload?.matched_variants || []).flatMap((line: any) => [...(line?.present_cards || []), ...(line?.missing_cards || [])])),
+        ...((comboPayload?.near_miss_variants || []).flatMap((line: any) => [...(line?.present_cards || []), ...(line?.missing_cards || [])])),
+      ].filter((name: any) => typeof name === "string" && name.length > 0);
+      const watchoutCards = (Array.isArray(watchoutsPayload) ? watchoutsPayload : [])
+        .map((row: any) => row?.card)
+        .filter((name: any) => typeof name === "string" && name.length > 0);
+      void hydrateDisplay([...comboCards, ...watchoutCards]);
+
+      setTab("Role Breakdown");
+      updateStatus("done");
+    } catch (err: any) {
+      updateStatus("failed");
+      alert(normalizeUiError(err, "Deck tagging failed"));
+    }
+  }
+
   async function runPipeline() {
     const runId = activeRunRef.current + 1;
     activeRunRef.current = runId;
@@ -1235,35 +1377,12 @@ export default function HomePage() {
       setSimRes(null);
       setAnalysis(null);
       setGuides(null);
+      setComboRes(null);
+      setRulesWatchoutsRes([]);
       setSelectedCard(null);
-      updateStatus("parsing");
-      const parsed = await requestJson(
-        "/api/decks/parse",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
-        },
-        "Deck parse",
-      );
-      if (activeRunRef.current !== runId) return;
-      setParseRes(parsed);
-
-      updateStatus("tagging");
-      const tagged = await requestJson(
-        "/api/decks/tag",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cards: parsed.cards, commander: parsed.commander, commanders: parsed.commanders || [], global_tags: true }),
-        },
-        "Deck tagging",
-      );
-      if (activeRunRef.current !== runId) return;
-      setTagRes(tagged);
-      setDisplayMap(tagged.card_display || {});
-      const inferredWincons = inferWinconsFromTagged(tagged);
-      setDetectedWincons(inferredWincons);
+      const prep = await parseAndTagDeck(runId);
+      if (!prep || activeRunRef.current !== runId) return;
+      const { parsed, tagged, inferredWincons } = prep;
 
       updateStatus("sim-queued");
       const effectivePolicy = computeEffectivePolicy();
@@ -1341,7 +1460,6 @@ export default function HomePage() {
       if (activeRunRef.current !== runId) return;
       setAnalysis(ana);
       setTab("Deck Analysis");
-      setDeckAnalysisView("Overview");
       updateStatus("analysis ready");
 
       const bracketCriteriaCards = (ana?.bracket_report?.criteria || [])
@@ -1622,9 +1740,9 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="sidebar-group">
+          <div className="sidebar-group sidebar-pane">
             <div className="sidebar-section-label">Import</div>
-            <div className="block stack" data-surface="2">
+            <div className="stack">
               <label>Deck URL (best effort)</label>
               <input className="input" value={moxfieldUrl} onChange={(e) => setMoxfieldUrl(e.target.value)} placeholder="Moxfield or Archidekt URL" />
               <button className="btn" onClick={importFromUrl}>Import URL</button>
@@ -1637,9 +1755,9 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="sidebar-group">
+          <div className="sidebar-group sidebar-pane">
             <div className="sidebar-section-label">Table Assumptions</div>
-            <div className="block stack" data-surface="2">
+            <div className="stack">
               <label>Bracket</label>
               <select className="select" value={bracket} onChange={(e) => setBracket(Number(e.target.value))}>
                 {[1, 2, 3, 4, 5].map((b) => (
@@ -1754,6 +1872,8 @@ export default function HomePage() {
           </div>
         </div>
         <div className="sidebar-footer">
+          <button className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={runTagOnly}>Tag Deck Only</button>
+          <p className="control-help">Parse, validate, tag, and open only the views that do not require simulation.</p>
           <button className="btn btn-primary sidebar-run-btn" onClick={runPipeline}>Run Full Analysis</button>
           <p className="control-help">Fetch card data, goldfish results, and the full analysis stack.</p>
         </div>
@@ -1920,14 +2040,16 @@ export default function HomePage() {
             <div className="panel-heading-group">
               <div className="panel-kicker">Analysis Stage</div>
               <h3>{hasOutcomeResources ? tab : "View Panel"}</h3>
-              <div className="decklist-status-row">
-                <span className="status-chip" data-tone={progressTone(analysisProgressMeta)}>
-                  {analysisProgressMeta.show ? analysisProgressMeta.label : "Ready for run"}
-                </span>
-                <span className="status-chip" data-tone={hasOutcomeResources ? "success" : "default"}>
-                  {hasOutcomeResources ? "Resources loaded" : "Waiting on analysis"}
-                </span>
-              </div>
+              {analysisProgressMeta.show || hasOutcomeResources ? (
+                <div className="decklist-status-row">
+                  <span className="status-chip" data-tone={progressTone(analysisProgressMeta)}>
+                    {analysisProgressMeta.show ? analysisProgressMeta.label : "Ready"}
+                  </span>
+                  <span className="status-chip" data-tone={hasOutcomeResources ? "success" : "default"}>
+                    {hasOutcomeResources ? "Resources loaded" : "Waiting on analysis"}
+                  </span>
+                </div>
+              ) : null}
             </div>
             {analysisProgressMeta.show ? (
               <InlinePanelProgress
@@ -1939,14 +2061,9 @@ export default function HomePage() {
               />
             ) : null}
           </div>
-          {!hasOutcomeResources ? (
-            <p className="muted">
-              No view resources loaded yet. Run Full Analysis to fetch card data, simulation output, and derived reports for this panel.
-            </p>
-          ) : null}
           {hasOutcomeResources ? (
             <div className="tab-list">
-              {TABS.map((t) => (
+              {availableTabs.map((t) => (
                 <button key={t} className={`btn tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{t}</button>
               ))}
             </div>
@@ -1956,27 +2073,18 @@ export default function HomePage() {
         <div className="block outcome-body" data-surface="1">
           {!hasOutcomeResources ? (
             <div className="resource-empty-state">
-              <h2>Nothing to show yet</h2>
-              <p>
-                This panel stays empty until the app has the resources it needs: fetched card data, goldfish simulation results,
-                and derived analysis outputs.
-              </p>
-              <p className="muted">Run Full Analysis to populate the views.</p>
+              <div className="resource-empty-brand" aria-hidden="true">
+                <span className="wordmark-glyph">D</span>
+                <span className="wordmark-text">
+                  Deck<span className="wordmark-dot">.</span>Check
+                </span>
+              </div>
+              <p className="resource-empty-caption">Nothing to show yet</p>
             </div>
           ) : (
             <>
           {tab === "Deck Analysis" && (
             <div className="guide-rendered">
-              <div className="row subtab-list">
-                <button className={`btn ${deckAnalysisView === "Overview" ? "active" : ""}`} onClick={() => setDeckAnalysisView("Overview")}>
-                  Overview
-                </button>
-                <button className={`btn ${deckAnalysisView === "Combos" ? "active" : ""}`} onClick={() => setDeckAnalysisView("Combos")}>
-                  Combos
-                </button>
-              </div>
-              {deckAnalysisView === "Overview" ? (
-                <>
               <h2>Key Findings</h2>
               <ul>
                 {findings.map((f, i) => <li key={i}>{f}</li>)}
@@ -2004,38 +2112,6 @@ export default function HomePage() {
                 <li><strong>Role entropy:</strong> very low can mean one-dimensional plan; very high can mean lack of focus.</li>
               </ul>
               <p><strong>Consistency Score:</strong> {analysis?.consistency_score ?? "n/a"} / 100</p>
-
-              <h2>Complex Systems Lens</h2>
-              <div className="kpi-grid">
-                <div className="mini-card" data-surface="3">
-                  <div className="mini-label">Resilience</div>
-                  <div className="mini-value">{analysis?.systems_metrics?.resilience_score ?? "n/a"}</div>
-                  <div className="control-help">{analysis?.systems_metrics?.interpretation?.resilience_score}</div>
-                </div>
-                <div className="mini-card" data-surface="3">
-                  <div className="mini-label">Redundancy</div>
-                  <div className="mini-value">{analysis?.systems_metrics?.redundancy_score ?? "n/a"}</div>
-                  <div className="control-help">{analysis?.systems_metrics?.interpretation?.redundancy_score}</div>
-                </div>
-                <div className="mini-card" data-surface="3">
-                  <div className="mini-label">Bottleneck Index</div>
-                  <div className="mini-value">{analysis?.systems_metrics?.bottleneck_index ?? "n/a"}</div>
-                  <div className="control-help">{analysis?.systems_metrics?.interpretation?.bottleneck_index}</div>
-                </div>
-                <div className="mini-card" data-surface="3">
-                  <div className="mini-label">Role Entropy</div>
-                  <div className="mini-value">{analysis?.systems_metrics?.role_entropy_bits ?? "n/a"} bits</div>
-                  <div className="control-help">{analysis?.systems_metrics?.interpretation?.role_entropy_bits}</div>
-                </div>
-              </div>
-
-              <h2>Tagging Diagnostics</h2>
-              <ul>
-                <li>Untagged cards: {analysis?.tag_diagnostics?.untagged_count ?? 0}</li>
-                <li>Potentially over-tagged cards: {analysis?.tag_diagnostics?.overloaded_count ?? 0}</li>
-                <li>Multi-role cards: {analysis?.tag_diagnostics?.multi_role_count ?? 0}</li>
-              </ul>
-              <p className="muted">This helps challenge the tagging system and identify where manual overrides or tighter regex rules are needed.</p>
 
               <h2>Deck Identity</h2>
               <p>
@@ -2099,7 +2175,7 @@ export default function HomePage() {
               <p><strong>Complete combos in list:</strong> {comboComplete.length}</p>
               {comboIntel?.fetched_at ? <p className="control-help">CommanderSpellbook fetched: {new Date(comboIntel.fetched_at).toLocaleString()}</p> : null}
               <p className="control-help">
-                Use the <strong>Combos</strong> view above for the full CommanderSpellbook catalog of complete combo lines already contained in this deck.
+                Use the <strong>Combos</strong> tab for the full CommanderSpellbook catalog of complete combo lines already contained in this deck.
               </p>
 
               <h3>Key Support Cards</h3>
@@ -2189,129 +2265,166 @@ export default function HomePage() {
                 },
               )}
 
-              <h2>Data Provenance</h2>
-              <ul>
-                {(integrationsMeta?.integrations || []).map((i: any, idx: number) => (
-                  <li key={idx}>
-                    <strong>{i.key}</strong> ({i.status}): {i.purpose} <a href={i.url} target="_blank" rel="noreferrer">[source]</a>
-                  </li>
-                ))}
-              </ul>
-                </>
-              ) : (
-                <div className="stack">
-                  <h2>CommanderSpellbook Combo Catalog</h2>
-                  <p className="muted">
-                    This view first shows complete CommanderSpellbook combos already contained in the decklist, then combos that are only one card short.
-                    It is deck-construction evidence, not proof that the line is assembled, protected, and resolved on curve.
-                  </p>
-
+              <details className="block">
+                <summary><strong>Advanced analysis</strong></summary>
+                <div className="stack" style={{ marginTop: 16 }}>
+                  <h2>Complex Systems Lens</h2>
                   <div className="kpi-grid">
-                    <div className="mini-card">
-                      <div className="mini-label">Complete lines</div>
-                      <div className="mini-value tone-good">{comboComplete.length}</div>
-                      <div className="control-help">Known combo variants already fully contained in this decklist.</div>
+                    <div className="mini-card" data-surface="3">
+                      <div className="mini-label">Resilience</div>
+                      <div className="mini-value">{analysis?.systems_metrics?.resilience_score ?? "n/a"}</div>
+                      <div className="control-help">{analysis?.systems_metrics?.interpretation?.resilience_score}</div>
                     </div>
-                    <div className="mini-card">
-                      <div className="mini-label">Combo support score</div>
-                      <div className="mini-value">{comboIntel?.combo_support_score ?? 0} / 100</div>
-                      <div className="control-help">Higher means more complete CommanderSpellbook lines are already contained in the list.</div>
+                    <div className="mini-card" data-surface="3">
+                      <div className="mini-label">Redundancy</div>
+                      <div className="mini-value">{analysis?.systems_metrics?.redundancy_score ?? "n/a"}</div>
+                      <div className="control-help">{analysis?.systems_metrics?.interpretation?.redundancy_score}</div>
                     </div>
-                    <div className="mini-card">
-                      <div className="mini-label">One-card-away lines</div>
-                      <div className="mini-value">{comboNearMiss.length}</div>
-                      <div className="control-help">CommanderSpellbook variants where this deck is missing exactly one named card.</div>
+                    <div className="mini-card" data-surface="3">
+                      <div className="mini-label">Bottleneck Index</div>
+                      <div className="mini-value">{analysis?.systems_metrics?.bottleneck_index ?? "n/a"}</div>
+                      <div className="control-help">{analysis?.systems_metrics?.interpretation?.bottleneck_index}</div>
                     </div>
-                    <div className="mini-card">
-                      <div className="mini-label">Source timestamp</div>
-                      <div className="mini-value">{comboIntel?.fetched_at ? "Live" : "Unknown"}</div>
-                      <div className="control-help">
-                        {comboIntel?.fetched_at ? new Date(comboIntel.fetched_at).toLocaleString() : "No fetch timestamp recorded."}
-                      </div>
+                    <div className="mini-card" data-surface="3">
+                      <div className="mini-label">Role Entropy</div>
+                      <div className="mini-value">{analysis?.systems_metrics?.role_entropy_bits ?? "n/a"} bits</div>
+                      <div className="control-help">{analysis?.systems_metrics?.interpretation?.role_entropy_bits}</div>
                     </div>
                   </div>
 
-                  {comboIntel?.warnings?.length > 0 && (
-                    <div className="block">
-                      <strong>Source warnings</strong>
-                      <ul className="list-compact">
-                        {comboIntel.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
-                      </ul>
-                    </div>
-                  )}
+                  <h2>Tagging Diagnostics</h2>
+                  <ul>
+                    <li>Untagged cards: {analysis?.tag_diagnostics?.untagged_count ?? 0}</li>
+                    <li>Potentially over-tagged cards: {analysis?.tag_diagnostics?.overloaded_count ?? 0}</li>
+                    <li>Multi-role cards: {analysis?.tag_diagnostics?.multi_role_count ?? 0}</li>
+                  </ul>
+                  <p className="muted">This helps challenge the tagging system and identify where manual overrides or tighter regex rules are needed.</p>
 
-                  <div className="stack">
-                    <h3>Complete Combos In This Deck</h3>
-                    {comboComplete.length === 0 ? (
-                      <p className="muted">No complete CommanderSpellbook combo lines detected in the current list.</p>
-                    ) : (
-                      comboComplete.map((variant: any, i: number) => (
-                        <div key={`combo-complete-${variant?.variant_id || i}`} className="block combo-variant-card">
-                          <div className="combo-variant-header">
-                            <div className="stack" style={{ gap: 4 }}>
-                              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                                <span className="combo-badge combo-badge-complete">Complete</span>
-                                <strong>{variant?.variant_id || `Combo ${i + 1}`}</strong>
-                                {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
-                              </div>
-                              <div className="control-help">
-                                Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
-                              </div>
-                            </div>
-                            {variant?.source_url ? (
-                              <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
-                            ) : null}
-                          </div>
-                          {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
-                          <div className="control-help">Cards in this line</div>
-                          {renderCardRow(variant?.cards || [], `combo-complete-all-${i}`, {
-                            emptyText: "No cards listed for this combo.",
-                          })}
-                        </div>
-                      ))
-                    )}
-                  </div>
+                  <h2>Data Provenance</h2>
+                  <ul>
+                    {(integrationsMeta?.integrations || []).map((i: any, idx: number) => (
+                      <li key={idx}>
+                        <strong>{i.key}</strong> ({i.status}): {i.purpose} <a href={i.url} target="_blank" rel="noreferrer">[source]</a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </details>
+            </div>
+          )}
 
-                  <div className="stack">
-                    <h3>One Card Away</h3>
-                    <p className="control-help">
-                      These are CommanderSpellbook lines where every piece except one is already present. Use this to spot compact upgrade paths without mixing them into the fully-contained combo list.
-                    </p>
-                    {comboNearMiss.length === 0 ? (
-                      <p className="muted">No one-card-away CommanderSpellbook combos detected in the current list.</p>
-                    ) : (
-                      comboNearMiss.map((variant: any, i: number) => (
-                        <div key={`combo-nearmiss-${variant?.variant_id || i}`} className="block combo-variant-card">
-                          <div className="combo-variant-header">
-                            <div className="stack" style={{ gap: 4 }}>
-                              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                                <span className="combo-badge combo-badge-nearmiss">Missing 1</span>
-                                <strong>{variant?.variant_id || `Near-miss ${i + 1}`}</strong>
-                                {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
-                              </div>
-                              <div className="control-help">
-                                Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
-                              </div>
-                            </div>
-                            {variant?.source_url ? (
-                              <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
-                            ) : null}
-                          </div>
-                          {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
-                          <div className="control-help">Cards already in this line</div>
-                          {renderCardRow(variant?.present_cards || [], `combo-nearmiss-present-${i}`, {
-                            emptyText: "No present cards listed for this combo.",
-                          })}
-                          <div className="control-help">Missing card</div>
-                          {renderCardRow(variant?.missing_cards || [], `combo-nearmiss-missing-${i}`, {
-                            emptyText: "No missing cards listed for this combo.",
-                          })}
-                        </div>
-                      ))
-                    )}
+          {tab === "Combos" && (
+            <div className="guide-rendered">
+              <h2>CommanderSpellbook Combo Catalog</h2>
+              <p className="muted">
+                This view first shows complete CommanderSpellbook combos already contained in the decklist, then combos that are only one card short.
+                It is deck-construction evidence, not proof that the line is assembled, protected, and resolved on curve.
+              </p>
+
+              <div className="kpi-grid">
+                <div className="mini-card">
+                  <div className="mini-label">Complete lines</div>
+                  <div className="mini-value tone-good">{comboComplete.length}</div>
+                  <div className="control-help">Known combo variants already fully contained in this decklist.</div>
+                </div>
+                <div className="mini-card">
+                  <div className="mini-label">Combo support score</div>
+                  <div className="mini-value">{comboIntel?.combo_support_score ?? 0} / 100</div>
+                  <div className="control-help">Higher means more complete CommanderSpellbook lines are already contained in the list.</div>
+                </div>
+                <div className="mini-card">
+                  <div className="mini-label">One-card-away lines</div>
+                  <div className="mini-value">{comboNearMiss.length}</div>
+                  <div className="control-help">CommanderSpellbook variants where this deck is missing exactly one named card.</div>
+                </div>
+                <div className="mini-card">
+                  <div className="mini-label">Source timestamp</div>
+                  <div className="mini-value">{comboIntel?.fetched_at ? "Live" : "Unknown"}</div>
+                  <div className="control-help">
+                    {comboIntel?.fetched_at ? new Date(comboIntel.fetched_at).toLocaleString() : "No fetch timestamp recorded."}
                   </div>
                 </div>
+              </div>
+
+              {comboIntel?.warnings?.length > 0 && (
+                <div className="block">
+                  <strong>Source warnings</strong>
+                  <ul className="list-compact">
+                    {comboIntel.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
               )}
+
+              <div className="stack">
+                <h3>Complete Combos In This Deck</h3>
+                {comboComplete.length === 0 ? (
+                  <p className="muted">No complete CommanderSpellbook combo lines detected in the current list.</p>
+                ) : (
+                  comboComplete.map((variant: any, i: number) => (
+                    <div key={`combo-complete-${variant?.variant_id || i}`} className="block combo-variant-card">
+                      <div className="combo-variant-header">
+                        <div className="stack" style={{ gap: 4 }}>
+                          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                            <span className="combo-badge combo-badge-complete">Complete</span>
+                            <strong>{variant?.variant_id || `Combo ${i + 1}`}</strong>
+                            {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
+                          </div>
+                          <div className="control-help">
+                            Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
+                          </div>
+                        </div>
+                        {variant?.source_url ? (
+                          <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
+                        ) : null}
+                      </div>
+                      {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
+                      <div className="control-help">Cards in this line</div>
+                      {renderCardRow(variant?.cards || [], `combo-complete-all-${i}`, {
+                        emptyText: "No cards listed for this combo.",
+                      })}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="stack">
+                <h3>One Card Away</h3>
+                <p className="control-help">
+                  These are CommanderSpellbook lines where every piece except one is already present. Use this to spot compact upgrade paths without mixing them into the fully-contained combo list.
+                </p>
+                {comboNearMiss.length === 0 ? (
+                  <p className="muted">No one-card-away CommanderSpellbook combos detected in the current list.</p>
+                ) : (
+                  comboNearMiss.map((variant: any, i: number) => (
+                    <div key={`combo-nearmiss-${variant?.variant_id || i}`} className="block combo-variant-card">
+                      <div className="combo-variant-header">
+                        <div className="stack" style={{ gap: 4 }}>
+                          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                            <span className="combo-badge combo-badge-nearmiss">Missing 1</span>
+                            <strong>{variant?.variant_id || `Near-miss ${i + 1}`}</strong>
+                            {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
+                          </div>
+                          <div className="control-help">
+                            Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
+                          </div>
+                        </div>
+                        {variant?.source_url ? (
+                          <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
+                        ) : null}
+                      </div>
+                      {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
+                      <div className="control-help">Cards already in this line</div>
+                      {renderCardRow(variant?.present_cards || [], `combo-nearmiss-present-${i}`, {
+                        emptyText: "No present cards listed for this combo.",
+                      })}
+                      <div className="control-help">Missing card</div>
+                      {renderCardRow(variant?.missing_cards || [], `combo-nearmiss-missing-${i}`, {
+                        emptyText: "No missing cards listed for this combo.",
+                      })}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           )}
 
@@ -3036,9 +3149,9 @@ export default function HomePage() {
             </div>
           )}
 
-          {tab === "Fastet Wins" && (
+          {tab === "Fastest Wins" && (
             <div className="guide-rendered">
-              <h2>Fastet Wins</h2>
+              <h2>Fastest Wins</h2>
               <div className="metric-help">
                 <div><strong>What this shows:</strong> the three fastest winning simulations from this run configuration.</div>
                 <div><strong>How to use it:</strong> compare opening hands, mulligan decisions, and early sequencing to see what your strongest starts actually look like.</div>
