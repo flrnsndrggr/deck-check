@@ -43,6 +43,7 @@ def parse_decklist(text: str) -> DeckParseResponse:
     warnings: List[str] = []
     commander = None
     commander_count = 0
+    commanders: List[str] = []
     companion = None
 
     for raw in text.splitlines():
@@ -66,13 +67,16 @@ def parse_decklist(text: str) -> DeckParseResponse:
             commander_count += qty
             if commander is None:
                 commander = name
+            if name not in commanders:
+                commanders.append(name)
         if current_section == "companion":
             companion = name
 
     if commander is None:
-        commanders = [c.name for c in cards if c.section == "commander"]
-        if commanders:
-            commander = commanders[0]
+        detected = [c.name for c in cards if c.section == "commander"]
+        if detected:
+            commander = detected[0]
+            commanders = list(dict.fromkeys(detected))
 
     total = sum(c.qty for c in cards if c.section in {"commander", "deck"})
     if total != 100:
@@ -80,8 +84,8 @@ def parse_decklist(text: str) -> DeckParseResponse:
 
     if commander is None:
         errors.append("No commander found. Add a Commander section.")
-    elif commander_count > 1:
-        warnings.append("Multiple commander cards detected. Current parser uses the first commander as primary for validation/simulation.")
+    elif len(commanders) > 2 or commander_count > 2:
+        errors.append("Commander section can include at most two commanders.")
 
     sideboard_qty = sum(c.qty for c in cards if c.section == "sideboard")
     if sideboard_qty > 0:
@@ -92,6 +96,7 @@ def parse_decklist(text: str) -> DeckParseResponse:
 
     return DeckParseResponse(
         commander=commander,
+        commanders=commanders,
         companion=companion,
         cards=cards,
         errors=errors,

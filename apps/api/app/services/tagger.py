@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 
 from app.core.config import settings
 from app.schemas.deck import CardEntry
+from app.services.commander_utils import commander_names_from_cards
 
 # Universal taxonomy: broad functional tags + pace modifiers + archetype axes.
 # This avoids replacing one ad-hoc list with another per-deck list.
@@ -115,6 +116,7 @@ TAG_PARENT_RELATIONS = {
 
 ARCHETYPE_SIGNALS = {
     "artifacts": ["artifact", "treasure", "clue", "equipment", "construct"],
+    "enchantments": ["enchantment", "aura", "constellation", "saga", "shrine", "background"],
     "spellslinger": ["instant", "sorcery", "noncreature", "magecraft", "prowess", "copy target spell"],
     "tokens": ["create", "token", "populate"],
     "reanimator": ["graveyard", "return target", "reanimate", "unearth"],
@@ -122,6 +124,8 @@ ARCHETYPE_SIGNALS = {
     "aristocrats": ["sacrifice", "dies", "drain", "whenever another creature"],
     "control": ["counter target", "destroy target", "exile target", "can't cast", "each opponent sacrifices"],
     "combo": ["you win the game", "untap", "extra turn", "copy target spell", "for each spell cast"],
+    "tribal": ["chosen creature type", "creature type", "kindred", "shares a creature type"],
+    "voltron": ["equipment", "aura attached", "enchanted creature", "commander damage"],
 }
 
 STOP_TOKENS = {
@@ -146,10 +150,109 @@ STOP_TOKENS = {
 }
 
 MANA_PAIR_RE = re.compile(r"add\s+\{[wubrgc]\}(?:\{[wubrgc]\})+", re.IGNORECASE)
+TYPE_SPLIT_RE = re.compile(r"\s+[—-]\s+")
+
+SUPERTYPES = {"basic", "legendary", "ongoing", "snow", "world"}
+CARD_TYPES = {
+    "artifact",
+    "battle",
+    "creature",
+    "enchantment",
+    "instant",
+    "kindred",
+    "land",
+    "planeswalker",
+    "sorcery",
+}
 
 
 def _text(card: Dict) -> str:
     return f"{card.get('type_line','')} {card.get('oracle_text','')}".lower()
+
+
+def _type_components(type_line: str) -> tuple[List[str], List[str], List[str]]:
+    line = str(type_line or "").replace("—", " — ").strip().lower()
+    parts = TYPE_SPLIT_RE.split(line, maxsplit=1)
+    left = [token for token in re.split(r"\s+", parts[0]) if token]
+    right = [token for token in re.split(r"\s+", parts[1]) if token] if len(parts) > 1 else []
+    supertypes = [token for token in left if token in SUPERTYPES]
+    card_types = [token for token in left if token in CARD_TYPES]
+    subtypes = [token for token in right if token and token not in {"—"}]
+    return supertypes, card_types, subtypes
+
+
+def _display_type_label(token: str) -> str:
+    return "-".join(part.capitalize() for part in token.split("-"))
+
+
+def compute_type_theme_profile(cards: List[CardEntry], card_map: Dict[str, Dict]) -> Dict[str, object]:
+    card_type_counts: Counter = Counter()
+    supertype_counts: Counter = Counter()
+    subtype_counts: Counter = Counter()
+    creature_subtype_counts: Counter = Counter()
+    artifact_subtype_counts: Counter = Counter()
+    enchantment_subtype_counts: Counter = Counter()
+
+    for entry in cards:
+        if entry.section not in {"deck", "commander"}:
+            continue
+        payload = card_map.get(entry.name, {}) or {}
+        supertypes, card_types, subtypes = _type_components(payload.get("type_line") or "")
+        qty = max(1, int(entry.qty or 1))
+        for token in supertypes:
+            supertype_counts[token] += qty
+        for token in card_types:
+            card_type_counts[token] += qty
+        for token in subtypes:
+            subtype_counts[token] += qty
+            if "creature" in card_types:
+                creature_subtype_counts[token] += qty
+            if "artifact" in card_types:
+                artifact_subtype_counts[token] += qty
+            if "enchantment" in card_types:
+                enchantment_subtype_counts[token] += qty
+
+    dominant_creature = creature_subtype_counts.most_common(1)
+    dominant_creature_subtype = None
+    if dominant_creature:
+        subtype, count = dominant_creature[0]
+        if count >= 6:
+            dominant_creature_subtype = {"name": _display_type_label(subtype), "count": count}
+
+    package_signals: List[str] = []
+    if dominant_creature_subtype:
+        package_signals.append(f"{dominant_creature_subtype['name']} is the main creature subtype package ({dominant_creature_subtype['count']} cards).")
+    if artifact_subtype_counts.get("equipment", 0) >= 4:
+        package_signals.append(f"Equipment density is meaningful ({artifact_subtype_counts['equipment']} cards), which is strong Voltron signal.")
+    if enchantment_subtype_counts.get("aura", 0) >= 4:
+        package_signals.append(f"Aura density is meaningful ({enchantment_subtype_counts['aura']} cards), which often supports Voltron or enchantress plans.")
+    if enchantment_subtype_counts.get("shrine", 0) >= 3:
+        package_signals.append(f"Shrine count is high enough to act as a dedicated subtype package ({enchantment_subtype_counts['shrine']} cards).")
+    if enchantment_subtype_counts.get("background", 0) >= 1:
+        package_signals.append("Background appears in the command package, which is a meaningful deck-construction signal.")
+
+    return {
+        "card_types": [{"name": _display_type_label(name), "count": count} for name, count in card_type_counts.most_common(6)],
+        "supertypes": [{"name": _display_type_label(name), "count": count} for name, count in supertype_counts.most_common(4)],
+        "subtypes": [{"name": _display_type_label(name), "count": count} for name, count in subtype_counts.most_common(8)],
+        "creature_subtypes": [{"name": _display_type_label(name), "count": count} for name, count in creature_subtype_counts.most_common(6)],
+        "dominant_creature_subtype": dominant_creature_subtype,
+        "package_signals": package_signals,
+    }
+
+
+def _apply_type_profile_to_scores(scores: Dict[str, float], type_profile: Dict[str, object]) -> None:
+    card_types = {str(row.get("name", "")).lower(): float(row.get("count", 0)) for row in type_profile.get("card_types", []) or []}
+    subtypes = {str(row.get("name", "")).lower(): float(row.get("count", 0)) for row in type_profile.get("subtypes", []) or []}
+    creature_subtypes = {str(row.get("name", "")).lower(): float(row.get("count", 0)) for row in type_profile.get("creature_subtypes", []) or []}
+
+    scores["artifacts"] += card_types.get("artifact", 0.0) * 1.6 + subtypes.get("equipment", 0.0) * 2.1 + subtypes.get("construct", 0.0) * 0.8
+    scores["enchantments"] += card_types.get("enchantment", 0.0) * 1.6 + subtypes.get("aura", 0.0) * 2.0 + subtypes.get("shrine", 0.0) * 2.4 + subtypes.get("saga", 0.0) * 1.4 + subtypes.get("background", 0.0) * 1.3
+    scores["spellslinger"] += (card_types.get("instant", 0.0) + card_types.get("sorcery", 0.0)) * 1.35 + creature_subtypes.get("wizard", 0.0) * 0.45
+    scores["voltron"] += subtypes.get("equipment", 0.0) * 1.9 + subtypes.get("aura", 0.0) * 1.7
+    if type_profile.get("dominant_creature_subtype"):
+        dominant = type_profile["dominant_creature_subtype"]
+        scores["tribal"] += float(dominant.get("count", 0)) * 2.3
 
 
 def _add_tag(card: CardEntry, tag: str, confidence: float, reason: str):
@@ -296,15 +399,24 @@ def _signal_score(joined: str, freq: Counter, signal: str) -> float:
     return float(freq[signal])
 
 
-def compute_archetype_weights(cards: List[CardEntry], card_map: Dict[str, Dict], commander: str | None) -> Dict[str, float]:
+def compute_archetype_weights(
+    cards: List[CardEntry],
+    card_map: Dict[str, Dict],
+    commanders: List[str] | str | None = None,
+    commander: str | None = None,
+) -> Dict[str, float]:
+    fallback_commander = commander if commander is not None else commanders
+    commander_names = commanders if isinstance(commanders, list) else commander_names_from_cards(cards, fallback_commander=fallback_commander)
+    type_profile = compute_type_theme_profile(cards, card_map)
     corpus = []
     for c in cards:
         if c.section not in {"deck", "commander"}:
             continue
         card = card_map.get(c.name, {})
         corpus.append(_text(card))
-    if commander and commander in card_map:
-        corpus.append(_text(card_map[commander]) * 2)
+    for commander in commander_names:
+        if commander in card_map:
+            corpus.append(_text(card_map[commander]) * 2)
 
     joined = " ".join(corpus)
     tokens = _tokenize(joined)
@@ -314,6 +426,7 @@ def compute_archetype_weights(cards: List[CardEntry], card_map: Dict[str, Dict],
     for arch, signals in ARCHETYPE_SIGNALS.items():
         score = sum(_signal_score(joined, freq, s) for s in signals)
         scores[arch] = score
+    _apply_type_profile_to_scores(scores, type_profile)
 
     total = sum(scores.values())
     if total <= 0:
@@ -326,10 +439,11 @@ def _commander_key_tokens(commander_txt: str) -> set[str]:
     return {t for t in toks if len(t) >= 4 and t not in STOP_TOKENS}
 
 
-def apply_context_tags(cards: List[CardEntry], card_map: Dict[str, Dict], archetypes: Dict[str, float], commander: str | None):
-    commander_txt = _text(card_map.get(commander, {})) if commander else ""
+def apply_context_tags(cards: List[CardEntry], card_map: Dict[str, Dict], archetypes: Dict[str, float], commanders: List[str] | str | None):
+    commander_names = commanders if isinstance(commanders, list) else commander_names_from_cards(cards, fallback_commander=commanders)
+    commander_txt = " ".join(_text(card_map.get(name, {})) for name in commander_names)
     key_tokens = _commander_key_tokens(commander_txt)
-    has_commander = bool(commander and commander.strip())
+    has_commander = bool(commander_names)
 
     top_arch = sorted(archetypes.items(), key=lambda kv: kv[1], reverse=True)[:3]
     top_arch_names = {k for k, v in top_arch if v > 0.12}
@@ -366,7 +480,13 @@ def apply_context_tags(cards: List[CardEntry], card_map: Dict[str, Dict], archet
                 _add_tag(c, "#Setup", 0.45, "Non-permanent support spell.")
 
 
-def tag_cards(cards: List[CardEntry], card_map: Dict[str, Dict], commander: str | None, use_global_prefix: bool = True) -> Tuple[List[CardEntry], Dict[str, float], List[str]]:
+def tag_cards(
+    cards: List[CardEntry],
+    card_map: Dict[str, Dict],
+    commanders: List[str] | str | None = None,
+    use_global_prefix: bool = True,
+    commander: str | None = None,
+) -> Tuple[List[CardEntry], Dict[str, float], List[str]]:
     overrides = _load_role_overrides()
     for c in cards:
         c.tags = []
@@ -376,8 +496,9 @@ def tag_cards(cards: List[CardEntry], card_map: Dict[str, Dict], commander: str 
         for ov_tag, ov_reason in (overrides.get(c.name, {}) or {}).items():
             _add_tag(c, ov_tag, 0.99, f"Override: {ov_reason}")
 
-    archetypes = compute_archetype_weights(cards, card_map, commander)
-    apply_context_tags(cards, card_map, archetypes, commander)
+    commander_context = commander if commander is not None and commanders is None else commanders
+    archetypes = compute_archetype_weights(cards, card_map, commander_context)
+    apply_context_tags(cards, card_map, archetypes, commander_context)
     _normalise_relations(cards)
 
     lines = []

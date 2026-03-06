@@ -10,6 +10,7 @@ from typing import Dict, List
 from app.schemas.deck import CardEntry
 from app.services.edhrec import EDHRecService
 from app.services.scryfall import CardDataService
+from app.services.tagger import compute_type_theme_profile
 
 ROLE_TARGETS = {
     "balanced": {
@@ -907,9 +908,12 @@ def _role_gap_list(cards: List[CardEntry], template: str) -> List[Dict]:
 
 
 def _find_replaceable(cards: List[CardEntry], low_cards: List[Dict]) -> List[Dict]:
+    commander_names = {c.name for c in cards if c.section == "commander"}
     out = []
     for item in low_cards[:10]:
         card_name = item["card"]
+        if card_name in commander_names:
+            continue
         tags = set(item.get("tags", []))
         if "#Removal" in tags or "#Counter" in tags:
             label = "Low impact but necessary interaction"
@@ -1248,6 +1252,7 @@ def _intent_summary(
     sim_summary: Dict,
     combo_intel: Dict | None,
     importance: List[Dict] | None = None,
+    type_profile: Dict | None = None,
 ) -> Dict:
     role_counts = Counter()
     for c in cards:
@@ -1260,6 +1265,17 @@ def _intent_summary(
     primary_plan = "Value Midrange"
     secondary = "Combat Pressure"
     kill_vectors = supported_vectors or ["Combat"]
+    type_profile = type_profile or {}
+    dominant_creature_subtype = type_profile.get("dominant_creature_subtype") or {}
+    subtype_name = str(dominant_creature_subtype.get("name") or "").strip()
+    card_type_counts = {
+        str(row.get("name", "")).lower(): int(row.get("count", 0) or 0)
+        for row in (type_profile.get("card_types") or [])
+    }
+    subtype_counts = {
+        str(row.get("name", "")).lower(): int(row.get("count", 0) or 0)
+        for row in (type_profile.get("subtypes") or [])
+    }
     if "Combo" in kill_vectors or role_counts.get("#Combo", 0) >= 5 or (combo_intel or {}).get("matched_variants"):
         primary_plan = "Combo Assembly"
         secondary = "Value Engine Backup"
@@ -1278,6 +1294,18 @@ def _intent_summary(
     elif "Control Lock" in kill_vectors or role_counts.get("#Control", 0) + role_counts.get("#Counter", 0) >= 8:
         primary_plan = "Control into Inevitable Finish"
         secondary = "Commander Value"
+    elif subtype_name and int(dominant_creature_subtype.get("count", 0) or 0) >= 6:
+        primary_plan = f"{subtype_name} Typal Pressure"
+        secondary = "Board Development Backup"
+    elif subtype_counts.get("equipment", 0) >= 4 or subtype_counts.get("aura", 0) >= 4:
+        primary_plan = "Voltron Board Pressure"
+        secondary = "Commander-Led Backup"
+    elif card_type_counts.get("artifact", 0) >= 12:
+        primary_plan = "Artifact Value Engine"
+        secondary = "Combo or Board Backup" if "#Combo" in role_counts else "Board Development Backup"
+    elif card_type_counts.get("enchantment", 0) >= 10:
+        primary_plan = "Enchantment Value Engine"
+        secondary = "Board Development Backup"
 
     milestones = sim_summary.get("milestones", {})
     preferred_cards = [x.get("card") for x in (importance or []) if x.get("card")]
@@ -1343,9 +1371,11 @@ def _intent_summary(
         "evidence": {
             "top_tags": role_counts.most_common(6),
             "combo_evidence": combo_evidence,
+            "type_signals": type_profile,
         },
         "combo_evidence": combo_evidence,
         "combo_confidence_boost": round(min(0.35, len(combo_evidence) * 0.08), 3),
+        "type_signals": type_profile,
     }
 
 
@@ -1760,8 +1790,11 @@ def analyze(
     role_model = _role_target_model(cards, sim_summary, combo_intel, bracket=bracket, color_count=color_count)
     gaps = _role_gap_list_from_model(cards, role_model)
     gap_roles = {g.get("role") for g in gaps if g.get("role")}
+    commander_names = {c.name for c in cards if c.section == "commander"}
+    type_profile = compute_type_theme_profile(cards, card_map or {})
 
     cuts = _find_replaceable(cards, bottom)
+    cuts = [c for c in cuts if c.get("card") not in commander_names]
     adds = suggest_adds(cards, commander_ci, gaps, bracket, budget_max_usd=budget_max_usd, commander=commander)
     consistency_score = _consistency_score(sim_summary)
     health_summary = _health_summary(cards, rb, sim_summary, consistency_score, combo_intel=combo_intel)
@@ -1825,9 +1858,11 @@ def analyze(
 
     swaps = []
     for c, a in zip(cuts[:10], adds[:10]):
+        if c.get("card") in commander_names:
+            continue
         swaps.append({"cut": c["card"], "add": a["card"], "reason": f"Replace low-impact slot with {a['fills']} support."})
 
-    intent = _intent_summary(commander, cards, sim_summary, combo_intel, importance=top)
+    intent = _intent_summary(commander, cards, sim_summary, combo_intel, importance=top, type_profile=type_profile)
     actions = _actionable_actions(gaps, combo_intel)
     deck_card_map = card_map or {}
     manabase_analysis = _manabase_analysis(
@@ -1895,6 +1930,7 @@ def analyze(
             "near_miss_variants": [],
             "warnings": [],
         },
+        "type_theme_profile": type_profile,
         "graph_payloads": graph_payloads,
         "graph_explanations": graph_explanations,
         "graph_deck_blurbs": graph_deck_blurbs,

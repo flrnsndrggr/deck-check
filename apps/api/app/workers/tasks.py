@@ -30,12 +30,13 @@ def run_simulation_task(job_id: str, payload: dict):
         db.commit()
 
         requested_backend = payload.get("sim_backend", "vectorized")
+        commander_names = payload.get("commanders") or []
         warning: str | None = None
         result = None
 
         sim_kwargs = dict(
             cards=payload["cards"],
-            commander=payload.get("commander"),
+            commander=commander_names or payload.get("commander"),
             runs=payload.get("runs", 1000),
             turn_limit=payload.get("turn_limit", 8),
             policy=payload.get("policy", "auto"),
@@ -48,6 +49,10 @@ def run_simulation_task(job_id: str, payload: dict):
             combo_variants=payload.get("combo_variants", []),
             combo_source_live=payload.get("combo_source_live", False),
         )
+
+        if len(commander_names) > 1 and requested_backend == "vectorized":
+            requested_backend = "python_fallback"
+            warning = "Vectorized backend does not yet support multi-commander command zones. Used python_fallback."
 
         if requested_backend == "vectorized":
             if run_simulation_batch_vectorized is None:

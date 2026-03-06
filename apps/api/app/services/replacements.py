@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Optional, Set
 
 from app.schemas.deck import CardEntry
+from app.services.commander_utils import combined_color_identity, commander_names_from_cards
 from app.services.scryfall import CardDataService
 
 FUNCTIONAL_ROLES = {
@@ -239,7 +240,8 @@ def strictly_better_replacements(
     if selected_entry is None:
         return {"selected_card": selected_card, "options": []}
 
-    card_map = svc.get_cards_by_name([selected_card] + ([commander] if commander else []))
+    commander_names = commander_names_from_cards(cards, fallback_commander=commander)
+    card_map = svc.get_cards_by_name([selected_card] + commander_names)
     selected_data = card_map.get(selected_card, {})
     selected_roles = set(selected_entry.tags) & FUNCTIONAL_ROLES
     if not selected_roles:
@@ -247,7 +249,7 @@ def strictly_better_replacements(
     if not selected_roles:
         selected_roles = {"#Utility"}
 
-    commander_ci = "".join(card_map.get(commander or "", {}).get("color_identity") or [])
+    commander_ci = "".join(combined_color_identity(card_map, commander_names))
     commander_ci_set = set(commander_ci)
     selected_family = _functional_family(selected_data, selected_roles)
 

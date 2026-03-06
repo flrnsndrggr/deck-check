@@ -29,6 +29,7 @@ class CardEntry(BaseModel):
 
 class DeckParseResponse(BaseModel):
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
     companion: Optional[str] = None
     color_identity: List[str] = Field(default_factory=list)
     color_identity_size: int = 0
@@ -40,6 +41,7 @@ class DeckParseResponse(BaseModel):
 class TagRequest(BaseModel):
     cards: List[CardEntry]
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
     global_tags: bool = True
 
 
@@ -47,6 +49,7 @@ class TagResponse(BaseModel):
     tagged_lines: List[str]
     cards: List[CardEntry]
     archetype_weights: Dict[str, float] = Field(default_factory=dict)
+    type_theme_profile: Dict = Field(default_factory=dict)
     card_display: Dict[str, Dict] = Field(default_factory=dict)
     color_identity: List[str] = Field(default_factory=list)
     color_identity_size: int = 0
@@ -55,6 +58,7 @@ class TagResponse(BaseModel):
 class AnalyzeRequest(BaseModel):
     cards: List[CardEntry]
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
     bracket: int = Field(default=3, ge=1, le=5)
     template: str = "balanced"
     budget_max_usd: Optional[float] = Field(default=None, ge=0)
@@ -64,17 +68,20 @@ class AnalyzeRequest(BaseModel):
 class ComboIntelRequest(BaseModel):
     cards: List[str] = Field(default_factory=list)
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
 
 
 class RulesWatchoutRequest(BaseModel):
     cards: List[CardEntry]
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
 
 
 class StrictlyBetterRequest(BaseModel):
     cards: List[CardEntry]
     selected_card: str
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
     budget_max_usd: Optional[float] = Field(default=None, ge=0)
 
 
@@ -160,6 +167,7 @@ class GuideResponse(BaseModel):
 class SimRunRequest(BaseModel):
     cards: List[CardEntry]
     commander: Optional[str] = None
+    commanders: List[str] = Field(default_factory=list)
     runs: int = Field(default=1000, ge=10, le=100000)
     turn_limit: int = Field(default=8, ge=3, le=20)
     policy: str = "auto"

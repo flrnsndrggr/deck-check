@@ -35,6 +35,7 @@ from app.schemas.deck import (
     TagResponse,
 )
 from app.services.analyzer import analyze
+from app.services.commander_utils import combined_color_identity, commander_display_name, commander_names_from_cards, primary_commander_name
 from app.services.commanderspellbook import ComboIntelService
 from app.services.guides import generate_guides
 from app.services.ai_enrichment import AIEnrichmentService
@@ -42,7 +43,7 @@ from app.services.importer import UrlImportError, import_decklist_from_url
 from app.services.parser import parse_decklist
 from app.services.rules_index import search_rules
 from app.services.scryfall import CardDataService
-from app.services.tagger import TAG_PARENT_RELATIONS, UNIVERSAL_TAG_GROUPS, tag_cards
+from app.services.tagger import TAG_PARENT_RELATIONS, UNIVERSAL_TAG_GROUPS, compute_type_theme_profile, tag_cards
 from app.services.updates import update_all_data
 from app.services.validator import validate_deck
 from app.services.rules_watchouts import build_rules_watchouts
@@ -121,7 +122,10 @@ def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
     v_errors, v_warnings, _ = validate_deck(parsed.cards, parsed.commander, card_map, req.bracket)
     parsed.errors.extend(v_errors)
     parsed.warnings.extend(v_warnings)
-    commander_colors = list(card_map.get(parsed.commander or "", {}).get("color_identity") or [])
+    commander_names = commander_names_from_cards(parsed.cards, fallback_commander=parsed.commander)
+    parsed.commanders = commander_names
+    parsed.commander = primary_commander_name(commander_names)
+    commander_colors = combined_color_identity(card_map, commander_names)
     parsed.color_identity = commander_colors
     parsed.color_identity_size = len(commander_colors)
     return parsed
@@ -131,13 +135,16 @@ def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
 def tag_deck(req: TagRequest):
     svc = CardDataService()
     card_map = svc.get_cards_by_name([c.name for c in req.cards])
-    cards, archetypes, lines = tag_cards(req.cards, card_map, req.commander, use_global_prefix=req.global_tags)
+    commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
+    cards, archetypes, lines = tag_cards(req.cards, card_map, commander_names, use_global_prefix=req.global_tags)
+    type_profile = compute_type_theme_profile(req.cards, card_map)
     display = svc.get_display_by_names([c.name for c in req.cards])
-    commander_colors = list(card_map.get(req.commander or "", {}).get("color_identity") or [])
+    commander_colors = combined_color_identity(card_map, commander_names)
     return TagResponse(
         tagged_lines=lines,
         cards=cards,
         archetype_weights=archetypes,
+        type_theme_profile=type_profile,
         card_display=display,
         color_identity=commander_colors,
         color_identity_size=len(commander_colors),
@@ -156,17 +163,19 @@ def tags_taxonomy():
 def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
     payload = req.model_dump()
     lookup_names = [c.name for c in req.cards]
-    if req.commander:
-        lookup_names.append(req.commander)
+    commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
+    lookup_names.extend(commander_names)
     card_map = CardDataService().get_cards_by_name(lookup_names)
-    commander_colors = list(card_map.get(req.commander or "", {}).get("color_identity") or [])
+    commander_colors = combined_color_identity(card_map, commander_names)
     payload["color_identity"] = commander_colors
-    payload["color_identity_size"] = len(commander_colors) if req.commander else 3
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], req.commander)
-    payload["cards"] = enrich_sim_cards(req.cards, card_map, req.commander)
+    payload["color_identity_size"] = len(commander_colors) if commander_names else 3
+    payload["commanders"] = commander_names
+    payload["commander"] = commander_display_name(commander_names) or req.commander
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
+    payload["cards"] = enrich_sim_cards(req.cards, card_map, commander_names)
     payload["combo_variants"] = combo_intel.get("matched_variants", [])
     payload["combo_source_live"] = not bool(combo_intel.get("warnings"))
-    payload["primary_wincons"] = infer_supported_wincons(payload["cards"], req.commander, combo_intel)
+    payload["primary_wincons"] = infer_supported_wincons(payload["cards"], commander_names, combo_intel)
     cached = get_cached_simulation(payload)
     job_id = str(uuid4())
     if cached is not None:
@@ -220,10 +229,14 @@ def get_sim(job_id: str, db: Session = Depends(get_db)):
 @router.post("/analyze")
 def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     card_map = CardDataService().get_cards_by_name([c.name for c in req.cards])
-    commander_colors = list(card_map.get(req.commander or "", {}).get("color_identity") or [])
+    type_profile = compute_type_theme_profile(req.cards, card_map)
+    commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
+    commander_colors = combined_color_identity(card_map, commander_names)
     commander_ci = "".join(commander_colors)
     _, _, bracket_report = validate_deck(req.cards, req.commander, card_map, req.bracket)
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], req.commander)
+    primary_commander = primary_commander_name(commander_names) or req.commander
+    commander_display = commander_display_name(commander_names) or req.commander
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
     out = analyze(
         req.cards,
         req.sim_summary,
@@ -232,15 +245,18 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
         commander_ci,
         budget_max_usd=req.budget_max_usd,
         combo_intel=combo_intel,
-        commander=req.commander,
+        commander=primary_commander,
         commander_colors=commander_colors,
         card_map=card_map,
     )
-    watchouts = build_rules_watchouts(req.cards, req.commander)
+    out.setdefault("intent_summary", {})
+    out["intent_summary"]["commander"] = commander_display
+    out["type_theme_profile"] = type_profile
+    watchouts = build_rules_watchouts(req.cards, commander_display)
     enricher = AIEnrichmentService(db)
     out = enricher.enrich_analysis(
         cards=req.cards,
-        commander=req.commander,
+        commander=commander_display,
         analysis=out,
         sim_summary=req.sim_summary,
         watchouts=watchouts,
@@ -258,13 +274,16 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
 
 @router.post("/combos/intel", response_model=ComboIntel)
 def combo_intel(req: ComboIntelRequest):
-    return ComboIntelService().get_combo_intel(req.cards, req.commander)
+    commander_names = [name for name in req.commanders if name] or ([req.commander] if req.commander else [])
+    return ComboIntelService().get_combo_intel(req.cards, commander_names)
 
 
 @router.post("/rules/watchouts")
 def rules_watchouts(req: RulesWatchoutRequest, db: Session = Depends(get_db)):
-    watchouts = build_rules_watchouts(req.cards, req.commander)
-    watchouts = AIEnrichmentService(db).enrich_watchouts(cards=req.cards, commander=req.commander, watchouts=watchouts)
+    commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
+    commander_display = commander_display_name(commander_names) or req.commander
+    watchouts = build_rules_watchouts(req.cards, commander_display)
+    watchouts = AIEnrichmentService(db).enrich_watchouts(cards=req.cards, commander=commander_display, watchouts=watchouts)
     return {"watchouts": watchouts}
 
 
@@ -273,7 +292,7 @@ def strictly_better(req: StrictlyBetterRequest):
     return strictly_better_replacements(
         cards=req.cards,
         selected_card=req.selected_card,
-        commander=req.commander,
+        commander=commander_display_name(commander_names_from_cards(req.cards, fallback_commander=req.commander)) or req.commander,
         budget_max_usd=req.budget_max_usd,
     )
 

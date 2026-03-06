@@ -26,6 +26,7 @@ CARD_FIELDS = [
     "oracle_id",
     "mana_cost",
     "cmc",
+    "released_at",
     "power",
     "toughness",
     "type_line",
@@ -283,6 +284,8 @@ class CardDataService:
         type_line = str(card.get("type_line") or "")
         if not type_line or card.get("oracle_text") is None:
             return False
+        if not card.get("released_at"):
+            return False
         if "Creature" in type_line and card.get("power") is None:
             return False
         return True
@@ -404,19 +407,21 @@ class CardDataService:
         cached = self._get_cached_rulings(oracle_ids)
         missing_cards = [c for c in card_map.values() if c.get("oracle_id") not in cached and c.get("rulings_uri")]
         fetched: Dict[str, List[Dict[str, Any]]] = {}
-        for card in missing_cards[:30]:
-            oid = card.get("oracle_id")
-            uri = card.get("rulings_uri")
-            if not oid or not uri:
-                continue
-            try:
-                with httpx.Client(timeout=20) as client:
-                    resp = client.get(uri)
-                    resp.raise_for_status()
-                    rows = resp.json().get("data", [])
-                fetched[oid] = rows
-            except Exception:
-                fetched[oid] = []
+        if missing_cards:
+            with httpx.Client(timeout=20) as client:
+                for card in missing_cards:
+                    oid = card.get("oracle_id")
+                    uri = card.get("rulings_uri")
+                    if not oid or not uri:
+                        continue
+                    try:
+                        resp = client.get(uri)
+                        resp.raise_for_status()
+                        rows = resp.json().get("data", [])
+                    except Exception:
+                        # Do not cache transient failures as empty forever.
+                        continue
+                    fetched[oid] = rows if isinstance(rows, list) else []
         if fetched:
             self._store_rulings(fetched)
             cached.update(fetched)

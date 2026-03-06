@@ -1,17 +1,11 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
+import { IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import { THEME_INIT_SCRIPT } from "./theme";
 
 const fontUi = Instrument_Sans({
   subsets: ["latin"],
   variable: "--font-ui",
-  display: "swap",
-});
-
-const fontDisplay = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-display",
   display: "swap",
 });
 
@@ -36,7 +30,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" data-theme="dark" data-theme-mode="system" suppressHydrationWarning>
-      <body className={`${fontUi.variable} ${fontDisplay.variable} ${fontMono.variable}`}>
+      <body className={`${fontUi.variable} ${fontMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         {children}
       </body>

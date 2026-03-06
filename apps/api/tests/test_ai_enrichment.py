@@ -226,6 +226,52 @@ def test_rules_watchout_enrichment_hides_empty_cards(monkeypatch):
     assert out[0]["rules_information"]
 
 
+def test_rules_watchout_enrichment_preserves_deterministic_sections_when_model_is_partial(monkeypatch):
+    monkeypatch.setattr(ai_mod, "redis_conn", _FakeRedis())
+    monkeypatch.setattr(ai_mod.settings, "ai_enabled", True)
+    monkeypatch.setattr(ai_mod.settings, "openai_api_key", "test-key")
+
+    svc = AIEnrichmentService(None)
+    monkeypatch.setattr(svc, "card_service", _FakeCardService())
+    monkeypatch.setattr(svc, "_call_model_json", lambda family, prompt, schema: {
+        "parsed": {
+            "items": [
+                {
+                    "card": "Gerrard's Hourglass Pendant",
+                    "errata": [],
+                    "notes": [
+                        {
+                            "text": "Hold activation until you know which permanents actually went to your graveyard this turn.",
+                            "citations": ["flag:Gerrard's Hourglass Pendant:Replacement effect"],
+                            "mentioned_cards": ["Gerrard's Hourglass Pendant"],
+                        }
+                    ],
+                    "rules_information": [],
+                }
+            ]
+        },
+        "usage": {},
+        "request_json": {"family": family, "prompt_payload": prompt},
+        "response_json": {"parsed": {}},
+        "payload_hash": "watchout-partial",
+        "estimated_cost_usd": 0.0,
+    })
+    watchouts = [
+        {
+            "card": "Gerrard's Hourglass Pendant",
+            "complexity_flags": ["Replacement effect"],
+            "rulings": [{"published_at": "2025-01-01", "comment": "Example ruling."}],
+            "errata": ["2025-01-01: Example ruling."],
+            "notes": ["Base deterministic note."],
+            "rules_information": ["Base deterministic rules info."],
+        }
+    ]
+    out = svc.enrich_watchouts(cards=[], commander=None, watchouts=watchouts)
+    assert out[0]["errata"] == ["2025-01-01: Example ruling."]
+    assert "Base deterministic rules info." in out[0]["rules_information"]
+    assert any("Hold activation" in note for note in out[0]["notes"])
+
+
 def test_guide_enrichment_injects_hidden_overview(monkeypatch):
     monkeypatch.setattr(ai_mod, "redis_conn", _FakeRedis())
     monkeypatch.setattr(ai_mod.settings, "ai_enabled", True)

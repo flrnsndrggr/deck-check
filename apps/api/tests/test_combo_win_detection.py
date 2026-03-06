@@ -43,12 +43,25 @@ def _voltron_shell_cards():
 
 
 def test_commander_is_excluded_from_shuffled_sim_deck():
-    deck, commander_card = _build_sim_deck(_combo_shell_cards(), "Combo Commander")
+    deck, commander_cards = _build_sim_deck(_combo_shell_cards(), "Combo Commander")
 
-    assert commander_card is not None
-    assert commander_card.name == "Combo Commander"
+    assert len(commander_cards) == 1
+    assert commander_cards[0].name == "Combo Commander"
     assert all(card.name != "Combo Commander" for card in deck)
     assert len(deck) == 8
+
+
+def test_partner_commanders_are_both_excluded_from_shuffled_sim_deck():
+    cards = [
+        {"qty": 1, "name": "Partner A", "section": "commander", "tags": ["#CommanderSynergy"], "mana_value": 2},
+        {"qty": 1, "name": "Partner B", "section": "commander", "tags": ["#CommanderSynergy"], "mana_value": 3},
+        {"qty": 1, "name": "Land A", "section": "deck", "tags": ["#Land"], "mana_value": 0},
+        {"qty": 97, "name": "Filler", "section": "deck", "tags": ["#Setup"], "mana_value": 1},
+    ]
+    deck, commander_cards = _build_sim_deck(cards, ["Partner A", "Partner B"])
+
+    assert sorted(card.name for card in commander_cards) == ["Partner A", "Partner B"]
+    assert all(card.name not in {"Partner A", "Partner B"} for card in deck)
 
 
 def test_python_combo_win_requires_live_matched_variant():

@@ -63,9 +63,17 @@ def _normalize_name(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
-def _build_sim_deck(cards: List[dict], commander: str | None) -> tuple[List[Card], Card | None]:
-    commander_key = _normalize_name(commander)
-    commander_card: Card | None = None
+def _commander_names(commander: str | List[str] | None) -> List[str]:
+    if isinstance(commander, list):
+        return [str(name).strip() for name in commander if str(name or "").strip()]
+    if commander and str(commander).strip():
+        return [str(commander).strip()]
+    return []
+
+
+def _build_sim_deck(cards: List[dict], commander: str | List[str] | None) -> tuple[List[Card], List[Card]]:
+    commander_keys = {_normalize_name(name) for name in _commander_names(commander)}
+    commander_cards: List[Card] = []
     deck: List[Card] = []
 
     for c in cards:
@@ -99,10 +107,10 @@ def _build_sim_deck(cards: List[dict], commander: str | None) -> tuple[List[Card
             alt_win_kind=c.get("alt_win_kind"),
         )
         section = str(c.get("section", "deck") or "deck").strip().lower()
-        is_commander = commander_key and _normalize_name(c.get("name")) == commander_key
+        is_commander = section == "commander" or _normalize_name(c.get("name")) in commander_keys
 
-        if is_commander and (section == "commander" or commander_card is None):
-            commander_card = card
+        if is_commander and (section == "commander" or not any(existing.name == card.name for existing in commander_cards)):
+            commander_cards.append(card)
             if section != "deck":
                 continue
         if section != "deck":
@@ -141,7 +149,7 @@ def _build_sim_deck(cards: List[dict], commander: str | None) -> tuple[List[Card
                 )
             )
 
-    return deck, commander_card
+    return deck, commander_cards
 
 
 def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
@@ -171,14 +179,15 @@ def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
 def _live_combo_reason(
     combo_variants: List[Dict],
     battlefield: List[Card],
-    commander: str | None,
-    commander_live: bool,
+    commanders: str | List[str] | None,
+    commander_live_names: set[str],
 ) -> str | None:
     if not combo_variants:
         return None
     live_cards = {_normalize_name(card.name) for card in battlefield}
-    if commander and commander_live:
-        live_cards.add(_normalize_name(commander))
+    for commander_name in _commander_names(commanders):
+        if _normalize_name(commander_name) in commander_live_names:
+            live_cards.add(_normalize_name(commander_name))
     for variant in combo_variants:
         if variant["keys"].issubset(live_cards):
             card_list = ", ".join(variant["cards"])
@@ -189,9 +198,9 @@ def _live_combo_reason(
 def _combat_metrics(
     battlefield: List[Card],
     cast_this_turn: List[Card],
-    commander_card: Card | None,
-    commander_live: bool,
-) -> Dict[str, float]:
+    commander_cards: List[Card],
+    commander_live_names: set[str],
+) -> Dict[str, object]:
     summoning_names = {c.name for c in cast_this_turn if not c.has_haste}
     attackers = [c for c in battlefield if c.is_creature and (c.has_haste or c.name not in summoning_names)]
     combat_buff = sum(c.combat_buff for c in battlefield)
@@ -213,12 +222,14 @@ def _combat_metrics(
     evasion_factor = min(1.0, 0.55 + avg_evasion)
     combat_damage = max(0.0, (base_power + token_attack_power + combat_buff * body_count) * extra_combat * evasion_factor)
 
-    commander_damage = 0.0
+    commander_damage_by_name: Dict[str, float] = {}
     poison_damage = 0.0
-    if commander_card and commander_live:
+    for commander_card in commander_cards:
+        if _normalize_name(commander_card.name) not in commander_live_names:
+            continue
         commander_evasion = min(1.0, 0.55 + commander_card.evasion_score)
         commander_attack = max(0.0, commander_card.power + commander_buff + combat_buff)
-        commander_damage = commander_attack * extra_combat * commander_evasion
+        commander_damage_by_name[commander_card.name] = commander_attack * extra_combat * commander_evasion
 
     for attacker in attackers:
         if attacker.infect:
@@ -230,7 +241,8 @@ def _combat_metrics(
 
     return {
         "combat_damage": combat_damage,
-        "commander_damage": commander_damage,
+        "commander_damage": sum(commander_damage_by_name.values()),
+        "commander_damage_by_name": commander_damage_by_name,
         "poison_damage": poison_damage,
     }
 
@@ -366,15 +378,15 @@ def _detect_wincon_for_turn(
     turn: int,
     commander_cast_turn: int | None,
     mana_total: int,
-    commander: str | None = None,
-    commander_live: bool = False,
-    commander_card: Card | None = None,
+    commanders: str | List[str] | None = None,
+    commander_live_names: set[str] | None = None,
+    commander_cards: List[Card] | None = None,
     combo_variants: List[Dict] | None = None,
     combo_source_live: bool = False,
     library_size: int = 0,
     graveyard_count: int = 0,
     combat_damage_total: float = 0.0,
-    commander_damage_total: float = 0.0,
+    commander_damage_total: Dict[str, float] | None = None,
     poison_total: float = 0.0,
     burn_total: float = 0.0,
     mill_total: float = 0.0,
@@ -391,7 +403,7 @@ def _detect_wincon_for_turn(
     for w in selected_wincons:
         if w == "Combo":
             if combo_source_live:
-                live_reason = _live_combo_reason(combo_variants or [], battlefield, commander, commander_live)
+                live_reason = _live_combo_reason(combo_variants or [], battlefield, commanders, commander_live_names or set())
                 if live_reason:
                     return w, live_reason
             else:
@@ -409,12 +421,15 @@ def _detect_wincon_for_turn(
                 if assembled_combo_shell:
                     return w, "Multiple combo and payoff pieces with an active engine crossed the deterministic combo threshold."
         if w == "Combat":
-            metrics = _combat_metrics(battlefield, cast_this_turn, commander_card, commander_live)
+            metrics = _combat_metrics(battlefield, cast_this_turn, commander_cards or [], commander_live_names or set())
             if (combat_damage_total >= 90) or (metrics["combat_damage"] >= 36 and turn >= 5):
                 return w, f"Projected combat pressure reached {combat_damage_total:.1f} effective damage."
         if w == "Commander Damage":
-            if commander_cast_turn is not None and commander_damage_total >= 21:
-                return w, f"Projected commander damage reached {commander_damage_total:.1f}."
+            damage_map = commander_damage_total or {}
+            if commander_cast_turn is not None:
+                for commander_name, damage in damage_map.items():
+                    if damage >= 21:
+                        return w, f"Projected commander damage reached {damage:.1f} with {commander_name}."
         if w == "Poison":
             if poison_total >= 10:
                 return w, f"Projected poison counters reached {poison_total:.1f}."
@@ -436,8 +451,8 @@ def _detect_wincon_for_turn(
 
 def simulate_one(
     cards: List[Card],
-    commander: str | None,
-    commander_card: Card | None = None,
+    commander: str | List[str] | None,
+    commander_cards: List[Card] | None = None,
     turn_limit: int = 8,
     policy: str = "casual",
     multiplayer: bool = True,
@@ -478,12 +493,13 @@ def simulate_one(
     battlefield: List[Card] = []
     mana_sources = 0
     lands_played_this_turn = 0
-    commander_tax = 0
+    commander_cards = commander_cards or []
+    commander_tax = {card.name: 0 for card in commander_cards}
     commander_cast_turn = None
-    commander_live = False
+    commander_live_names: set[str] = set()
     graveyard_count = 0
     combat_damage_total = 0.0
-    commander_damage_total = 0.0
+    commander_damage_total: Dict[str, float] = {card.name: 0.0 for card in commander_cards}
     poison_total = 0.0
     burn_total = 0.0
     mill_total = 0.0
@@ -564,18 +580,23 @@ def simulate_one(
                     draw_engine_turn = turn
 
         # 4) cast commander based on policy
-        if commander and commander_cast_turn is None:
-            cmd = commander_card
-            if cmd:
-                cmd_cost = cmd.mana_value + commander_tax
+        if commander_cards:
+            ordered_commanders = sorted(commander_cards, key=lambda c: (c.mana_value, c.name))
+            for cmd in ordered_commanders:
+                if _normalize_name(cmd.name) in commander_live_names:
+                    continue
+                cmd_cost = cmd.mana_value + commander_tax.get(cmd.name, 0)
                 should_cast = (policy in {"commander-centric", "optimized", "casual"} and turn >= 3) or (
                     policy == "hold commander" and turn >= 5
                 )
                 if should_cast and cmd_cost <= available_mana:
                     available_mana -= cmd_cost
-                    commander_cast_turn = turn
-                    commander_live = True
-                    cast_names.append(commander)
+                    commander_cast_turn = turn if commander_cast_turn is None else min(commander_cast_turn, turn)
+                    commander_live_names.add(_normalize_name(cmd.name))
+                    cast_names.append(cmd.name)
+                    cast_this_turn.append(cmd)
+                    cast_cards.add(cmd.name)
+                    battlefield.append(cmd)
 
         # 5/6) play plan pieces
         for i in range(len(hand) - 1, -1, -1):
@@ -628,15 +649,16 @@ def simulate_one(
         progress += len([c for c in battlefield if "#Engine" in c.tags]) * 1.0
         if commander_cast_turn is not None:
             progress += 1.2
-        combat_snapshot = _combat_metrics(battlefield, cast_this_turn, commander_card, commander_live)
+        combat_snapshot = _combat_metrics(battlefield, cast_this_turn, commander_cards, commander_live_names)
         progress += min(6.0, combat_snapshot["combat_damage"] / 10.0)
-        progress += min(5.0, combat_snapshot["commander_damage"] / 6.0)
+        progress += min(5.0, float(combat_snapshot["commander_damage"]) / 6.0)
         progress += min(4.0, burn_total / 10.0)
         plan_progress.append(progress)
 
         cast_name_set = {c.name for c in cast_this_turn}
         combat_damage_total += combat_snapshot["combat_damage"]
-        commander_damage_total += combat_snapshot["commander_damage"]
+        for commander_name, damage in (combat_snapshot["commander_damage_by_name"] or {}).items():
+            commander_damage_total[commander_name] = commander_damage_total.get(commander_name, 0.0) + float(damage)
         poison_total += combat_snapshot["poison_damage"]
         burn_total += sum(c.burn_value for c in cast_this_turn) + sum(c.repeatable_burn for c in battlefield if c.name not in cast_name_set)
         mill_total += sum(c.mill_value for c in cast_this_turn) + sum(c.repeatable_mill for c in battlefield if c.name not in cast_name_set)
@@ -659,9 +681,9 @@ def simulate_one(
                 turn=turn,
                 commander_cast_turn=commander_cast_turn,
                 mana_total=mana_total,
-                commander=commander,
-                commander_live=commander_live,
-                commander_card=commander_card,
+                commanders=commander,
+                commander_live_names=commander_live_names,
+                commander_cards=commander_cards,
                 combo_variants=combo_variants,
                 combo_source_live=combo_source_live,
                 library_size=len(lib),
@@ -749,7 +771,7 @@ def _turn_sort_key(v: str):
 
 def run_simulation_batch(
     cards: List[dict],
-    commander: str | None,
+    commander: str | List[str] | None,
     runs: int,
     turn_limit: int,
     policy: str,
@@ -764,7 +786,7 @@ def run_simulation_batch(
 ) -> Dict:
     rng = random.Random(seed)
     selected_wincons = _normalize_wincons(primary_wincons)
-    deck, commander_card = _build_sim_deck(cards, commander)
+    deck, commander_cards = _build_sim_deck(cards, commander)
     normalized_combo_variants = _normalize_combo_variants(combo_variants)
 
     results: List[RunMetrics] = []
@@ -778,7 +800,7 @@ def run_simulation_batch(
         out = simulate_one(
             deck,
             commander,
-            commander_card,
+            commander_cards,
             turn_limit,
             policy,
             multiplayer,
@@ -932,7 +954,7 @@ def run_simulation_batch(
         replay = simulate_one(
             deck,
             commander,
-            commander_card,
+            commander_cards,
             turn_limit,
             policy,
             multiplayer,

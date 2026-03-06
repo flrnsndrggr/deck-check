@@ -159,3 +159,107 @@ def test_bracket_report_includes_criteria_and_matching_cards(tmp_path, monkeypat
     assert gc is not None
     assert gc["current"] == 1
     assert any(x["name"] == "Sol Ring" for x in gc["cards"])
+
+
+def test_validator_accepts_partner_pair_and_combined_color_identity():
+    cards = [
+        CardEntry(qty=1, name="Tymna the Weaver", section="commander"),
+        CardEntry(qty=1, name="Kraum, Ludevic's Opus", section="commander"),
+        CardEntry(qty=1, name="Esper Card", section="deck"),
+        CardEntry(qty=97, name="Plains", section="deck"),
+    ]
+    card_map = {
+        "Tymna the Weaver": {
+            "type_line": "Legendary Creature — Human Cleric",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W", "B"],
+            "oracle_text": "Partner",
+        },
+        "Kraum, Ludevic's Opus": {
+            "type_line": "Legendary Creature — Zombie Horror",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["U", "R"],
+            "oracle_text": "Flying, haste\nPartner",
+        },
+        "Esper Card": {
+            "type_line": "Sorcery",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W", "U", "B"],
+            "oracle_text": "",
+        },
+        "Plains": {
+            "type_line": "Basic Land — Plains",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W"],
+            "oracle_text": "",
+        },
+    }
+    errors, _, _ = validate_deck(cards, "Tymna the Weaver", card_map, 3)
+    assert not errors
+
+
+def test_validator_accepts_choose_a_background_pair():
+    cards = [
+        CardEntry(qty=1, name="Abdel Adrian, Gorion's Ward", section="commander"),
+        CardEntry(qty=1, name="Candlekeep Sage", section="commander"),
+        CardEntry(qty=1, name="Azorius Card", section="deck"),
+        CardEntry(qty=97, name="Plains", section="deck"),
+    ]
+    card_map = {
+        "Abdel Adrian, Gorion's Ward": {
+            "type_line": "Legendary Creature — Human Warrior",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W"],
+            "oracle_text": "Choose a Background",
+        },
+        "Candlekeep Sage": {
+            "type_line": "Legendary Enchantment — Background",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["U"],
+            "oracle_text": "Commander creatures you own have ...",
+        },
+        "Azorius Card": {
+            "type_line": "Instant",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W", "U"],
+            "oracle_text": "",
+        },
+        "Plains": {
+            "type_line": "Basic Land — Plains",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["W"],
+            "oracle_text": "",
+        },
+    }
+    errors, _, _ = validate_deck(cards, "Abdel Adrian, Gorion's Ward", card_map, 3)
+    assert not errors
+
+
+def test_validator_rejects_two_commanders_without_legal_pairing():
+    cards = [
+        CardEntry(qty=1, name="Commander A", section="commander"),
+        CardEntry(qty=1, name="Commander B", section="commander"),
+        CardEntry(qty=98, name="Filler", section="deck"),
+    ]
+    card_map = {
+        "Commander A": {
+            "type_line": "Legendary Creature — Human",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G"],
+            "oracle_text": "",
+        },
+        "Commander B": {
+            "type_line": "Legendary Creature — Human",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G"],
+            "oracle_text": "",
+        },
+        "Filler": {
+            "type_line": "Creature",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G"],
+            "oracle_text": "",
+        },
+    }
+    errors, _, _ = validate_deck(cards, "Commander A", card_map, 3)
+    assert any("legal pairing" in e or "legal/valid" in e for e in errors)
