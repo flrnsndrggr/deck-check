@@ -50,6 +50,7 @@ def test_play_guide_is_primer_style_with_examples_and_matchups():
 
     out = generate_guides(analyze=analyze, sim_summary=sim_summary)
     primer = out["play_guide_md"]
+    rule0 = out["rule0_brief_md"]
 
     assert "# COMMANDER PRIMER" in primer
     assert "## 8. Pod Archetype Matchup Plans" in primer
@@ -58,4 +59,5 @@ def test_play_guide_is_primer_style_with_examples_and_matchups():
     assert "`Rhystic Study`" in primer
     assert "1234" in primer
     assert "5678" in primer
-
+    assert "# RULE 0 BRIEF" in rule0
+    assert "Rule 0 conversation" in rule0 or "What this deck is trying to do" in rule0

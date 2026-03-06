@@ -64,6 +64,19 @@ python apps/api/scripts/seed_sample.py
 ```
 
 ## API endpoints
+- `GET /api/auth/session`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/auth/password-reset/request`
+- `POST /api/auth/password-reset/confirm`
+- `GET /api/projects`
+- `GET /api/projects/{project_id}`
+- `GET /api/projects/{project_id}/versions`
+- `GET /api/projects/{project_id}/versions/{version_id}`
+- `POST /api/projects`
+- `PUT /api/projects/{project_id}`
+- `DELETE /api/projects/{project_id}`
 - `POST /api/decks/parse`
 - `POST /api/decks/tag`
 - `GET /api/tags/taxonomy`
@@ -132,6 +145,40 @@ Presets:
 - Moxfield URL import (best effort; can be blocked by anti-bot)
 - Archidekt URL import via `https://archidekt.com/api/decks/{id}/`
 - text paste import remains the guaranteed fallback
+
+## Accounts and saved decks
+Deck.Check now supports email/password accounts backed by server-side sessions.
+
+Security model:
+- passwords are hashed with `hashlib.scrypt`
+- sessions are opaque database-backed cookies, not long-lived JWTs
+- mutating auth/project routes require CSRF via `X-CSRF-Token`
+- login/register attempts are rate-limited in Redis
+- saved decks are scoped by authenticated user id
+
+Saved project payloads include:
+- decklist text
+- current controls/settings
+- latest tagged deck bundle
+- latest available simulation/analysis bundle
+- automatic snapshot refresh after a full analysis run for signed-in users
+
+Versioning model:
+- one current saved deck row per user-visible deck name
+- each save appends a new immutable version snapshot
+- the project list shows only the latest save
+- expanding a saved deck reveals older versions of the same named deck
+
+Password recovery:
+- users can request a one-time magic link by email
+- reset links are single-use and expire quickly
+- using a reset link rotates the password and revokes prior sessions
+
+Required migration after upgrading:
+```bash
+cd apps/api
+alembic upgrade head
+```
 
 ## Analytics lenses
 The outcomes panel includes multi-lens charts with plain-English interpretation:
@@ -206,6 +253,25 @@ Important runtime env vars:
 - `CARD_CACHE_BACKEND` (`postgres` in staging/prod, `sqlite` for local fallback)
 - `DATABASE_URL`
 - `REDIS_URL`
+- `AUTH_SESSION_TTL_DAYS`
+- `AUTH_COOKIE_NAME`
+- `AUTH_COOKIE_SECURE`
+- `AUTH_COOKIE_SAMESITE`
+- `AUTH_CSRF_HEADER`
+- `AUTH_CSRF_STORAGE_KEY`
+- `AUTH_RATE_LIMIT_ATTEMPTS`
+- `AUTH_RATE_LIMIT_WINDOW_S`
+- `AUTH_MAGIC_LINK_TTL_MINUTES`
+- `AUTH_EMAIL_FROM`
+- `RESEND_API_KEY`
+
+For Netlify + Render production:
+- keep API and frontend on HTTPS
+- set `CORS_ALLOWED_ORIGINS` to the exact frontend origin
+- keep `allow_credentials` enabled (already configured)
+- use `AUTH_COOKIE_SECURE=1`
+- use `AUTH_COOKIE_SAMESITE=none` when the frontend and API are on different origins
+- configure a real sender domain before enabling password recovery in production
 
 Production smoke test (after deploy):
 ```bash
@@ -217,6 +283,7 @@ API_BASE=https://your-api-domain ./scripts/smoke-prod.sh
 - Game Changers parsing from announcement/formats pages is best-effort and may include false positives without curated normalization.
 - Recommendation generation uses role-gap + Scryfall constrained search; it is intentionally conservative.
 - Moxfield URL import is best effort; text paste remains fallback.
+- Password reset email delivery requires `AUTH_EMAIL_FROM` and `RESEND_API_KEY` in production.
 
 ## Dev runbook note
 After simulation backend changes, rebuild worker/API images to ensure NumPy and packaged `packages/sim` code are loaded:

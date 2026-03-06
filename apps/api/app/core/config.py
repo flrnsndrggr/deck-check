@@ -25,6 +25,17 @@ class Settings(BaseModel):
     ai_cache_ttl_s: int = int(os.getenv("AI_CACHE_TTL_S", "86400"))
     ai_hide_unverifiable: bool = os.getenv("AI_HIDE_UNVERIFIABLE", "1").lower() in {"1", "true", "yes", "on"}
     ai_daily_budget_usd: float = float(os.getenv("AI_DAILY_BUDGET_USD", "0"))
+    auth_session_ttl_days: int = int(os.getenv("AUTH_SESSION_TTL_DAYS", "30"))
+    auth_cookie_name: str = os.getenv("AUTH_COOKIE_NAME", "dc_session")
+    auth_cookie_secure: bool = os.getenv("AUTH_COOKIE_SECURE", "1" if os.getenv("ENVIRONMENT", "local") != "local" else "0").lower() in {"1", "true", "yes", "on"}
+    auth_cookie_samesite: str = os.getenv("AUTH_COOKIE_SAMESITE", "none" if os.getenv("ENVIRONMENT", "local") != "local" else "lax")
+    auth_csrf_header: str = os.getenv("AUTH_CSRF_HEADER", "X-CSRF-Token")
+    auth_csrf_storage_key: str = os.getenv("AUTH_CSRF_STORAGE_KEY", "deckcheck.csrf")
+    auth_rate_limit_attempts: int = int(os.getenv("AUTH_RATE_LIMIT_ATTEMPTS", "10"))
+    auth_rate_limit_window_s: int = int(os.getenv("AUTH_RATE_LIMIT_WINDOW_S", "900"))
+    auth_magic_link_ttl_minutes: int = int(os.getenv("AUTH_MAGIC_LINK_TTL_MINUTES", "30"))
+    auth_email_from: str = os.getenv("AUTH_EMAIL_FROM", "")
+    resend_api_key: str = os.getenv("RESEND_API_KEY", "")
 
 
 settings = Settings()

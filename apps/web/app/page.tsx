@@ -20,6 +20,7 @@ import { THEME_STORAGE_KEY, chartTheme, isThemeMode, resolveTheme, type Resolved
 
 const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const DEFAULT_API_BASE = "https://deck-check.onrender.com";
+const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
 
 function sanitizeApiBase(raw: string): string {
   const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
@@ -56,6 +57,7 @@ const TABS = [
   "Fastest Wins",
   "Card Importance",
   "Optimization",
+  "Rule 0",
   "Primer",
   "Rules Watchouts",
 ] as const;
@@ -68,6 +70,15 @@ function progressTone(meta: { tone?: "error"; percent: number; show: boolean }):
   if (meta.percent >= 100 && meta.show) return "success";
   if (meta.show) return "accent";
   return "default";
+}
+
+function normalizeProjectNameKey(value: string) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "untitled-project";
 }
 
 function decklistStatusMeta(
@@ -527,6 +538,22 @@ export default function HomePage() {
   const [selectedCurveMv, setSelectedCurveMv] = useState<number | null>(null);
   const [decklistPanelView, setDecklistPanelView] = useState<"Decklist" | "Tagged Decklist">("Decklist");
   const [mobilePane, setMobilePane] = useState<"controls" | "deck" | "views">("controls");
+  const [authUser, setAuthUser] = useState<{ id: number; email: string } | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [csrfToken, setCsrfToken] = useState("");
+  const [projects, setProjects] = useState<any[]>([]);
+  const [projectVersions, setProjectVersions] = useState<Record<number, any[]>>({});
+  const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
   const [updatesMeta, setUpdatesMeta] = useState<any>(null);
   const [integrationsMeta, setIntegrationsMeta] = useState<any>(null);
   const [strictlyBetter, setStrictlyBetter] = useState<any[]>([]);
@@ -910,10 +937,24 @@ export default function HomePage() {
     return parsed;
   }
 
+  function persistCsrfToken(next: string) {
+    setCsrfToken(next);
+    if (typeof window === "undefined") return;
+    if (next) window.localStorage.setItem(AUTH_CSRF_STORAGE_KEY, next);
+    else window.localStorage.removeItem(AUTH_CSRF_STORAGE_KEY);
+  }
+
+  function clearResetTokenFromUrl() {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_token");
+    window.history.replaceState({}, "", url.toString());
+  }
+
   async function requestJson(path: string, init: RequestInit, stage: string): Promise<any> {
     let response: Response;
     try {
-      response = await fetch(apiUrl(path), init);
+      response = await fetch(apiUrl(path), { credentials: "include", ...init });
     } catch (err: any) {
       throw new Error(`${stage}: ${err?.message || "Network request failed."}`);
     }
@@ -945,6 +986,318 @@ export default function HomePage() {
       throw new Error(extractApiErrorMessage(payload, fallback));
     }
     return payload;
+  }
+
+  function authHeaders() {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const token = csrfToken || (typeof window !== "undefined" ? window.localStorage.getItem(AUTH_CSRF_STORAGE_KEY) || "" : "");
+    if (token) headers["X-CSRF-Token"] = token;
+    return headers;
+  }
+
+  function collectBundleCardNames(bundle: any): string[] {
+    const names = new Set<string>();
+    const add = (value: any) => {
+      if (typeof value === "string" && value.trim()) names.add(value);
+    };
+    (bundle?.parseRes?.cards || []).forEach((card: any) => add(card?.name));
+    (bundle?.tagRes?.cards || []).forEach((card: any) => add(card?.name));
+    (bundle?.analysis?.importance || []).forEach((row: any) => add(row?.card));
+    (bundle?.analysis?.adds || []).forEach((row: any) => add(row?.card));
+    (bundle?.analysis?.cuts || []).forEach((row: any) => add(row?.card));
+    (bundle?.analysis?.rules_watchouts || bundle?.rulesWatchoutsRes || []).forEach((row: any) => add(row?.card));
+    [...(bundle?.comboRes?.matched_variants || []), ...(bundle?.comboRes?.near_miss_variants || [])].forEach((row: any) => {
+      (row?.present_cards || []).forEach(add);
+      (row?.missing_cards || []).forEach(add);
+    });
+    return [...names];
+  }
+
+  function applySavedBundle(project: any) {
+    const bundle = project?.saved_bundle || {};
+    setCurrentProjectId(project?.project_id ?? project?.id ?? null);
+    setProjectName(project?.name || project?.deck_name || "");
+    setDecklist(project?.decklist_text || "");
+    setBracket(Number(project?.bracket ?? bundle?.settings?.bracket ?? 3));
+    setPolicy(bundle?.settings?.policy ?? "auto");
+    setSimRuns(Number(bundle?.settings?.simRuns ?? 2000));
+    setTurnLimit(Number(bundle?.settings?.turnLimit ?? 8));
+    setTablePressure(Number(bundle?.settings?.tablePressure ?? 30));
+    setMulliganAggression(Number(bundle?.settings?.mulliganAggression ?? 50));
+    setCommanderPriority(Number(bundle?.settings?.commanderPriority ?? 50));
+    setBudgetMaxUsd(String(bundle?.settings?.budgetMaxUsd ?? ""));
+    setShowAdvancedSettings(Boolean(bundle?.settings?.showAdvancedSettings ?? false));
+    setParseRes(bundle?.parseRes || null);
+    setTagRes(bundle?.tagRes || null);
+    setSimRes(bundle?.simRes || null);
+    setAnalysis(bundle?.analysis || null);
+    setGuides(bundle?.guides || null);
+    setComboRes(bundle?.comboRes || null);
+    setRulesWatchoutsRes(bundle?.rulesWatchoutsRes || []);
+    setDetectedWincons(bundle?.detectedWincons || []);
+    setDisplayMap(bundle?.tagRes?.card_display || {});
+    setDecklistPanelView("Decklist");
+    setSelectedCard(null);
+    setStatus(bundle?.status || (bundle?.analysis || bundle?.simRes || bundle?.guides ? "done" : bundle?.tagRes ? "done" : "idle"));
+    const hasAnalysis = Boolean(bundle?.analysis || bundle?.simRes || bundle?.guides);
+    const hasTag = Boolean(bundle?.tagRes);
+    setTab(hasAnalysis ? "Deck Analysis" : hasTag ? "Role Breakdown" : "Deck Analysis");
+    setMobilePane(hasAnalysis || hasTag ? "views" : "deck");
+    const hydrateNames = collectBundleCardNames(bundle);
+    if (hydrateNames.length) void hydrateDisplay(hydrateNames);
+  }
+
+  async function refreshProjects(nextUser = authUser) {
+    if (!nextUser) {
+      setProjects([]);
+      return;
+    }
+    try {
+      const payload = await requestJson("/api/projects", { method: "GET" }, "Project list");
+      setProjects(payload.projects || []);
+    } catch {
+      setProjects([]);
+    }
+  }
+
+  async function handleAuth(action: "login" | "register") {
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthNotice("");
+    try {
+      const payload = await requestJson(
+        `/api/auth/${action}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: authEmail, password: authPassword }),
+        },
+        action === "login" ? "Login" : "Account creation",
+      );
+      setAuthUser(payload.user || null);
+      persistCsrfToken(payload.csrf_token || "");
+      setAuthPassword("");
+      setResetPassword("");
+      setResetToken("");
+      setAuthChecked(true);
+      await refreshProjects(payload.user || null);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, action === "login" ? "Login failed." : "Account creation failed."));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthNotice("");
+    try {
+      await requestJson("/api/auth/logout", { method: "POST", headers: authHeaders() }, "Logout");
+      setAuthUser(null);
+      setProjects([]);
+      setCurrentProjectId(null);
+      setProjectName("");
+      setProjectVersions({});
+      setExpandedProjectId(null);
+      persistCsrfToken("");
+      setAuthChecked(true);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Logout failed."));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function requestPasswordReset() {
+    if (!authEmail.trim()) {
+      setAuthError("Enter your email first.");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthNotice("");
+    try {
+      const payload = await requestJson(
+        "/api/auth/password-reset/request",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: authEmail }),
+        },
+        "Password reset request",
+      );
+      setAuthNotice(payload?.debug_magic_link ? `${payload.message} Local link: ${payload.debug_magic_link}` : payload.message || "If that email exists, a one-time reset link has been sent.");
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Password reset request failed."));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function confirmPasswordReset() {
+    if (!resetToken) {
+      setAuthError("Reset link is missing or expired.");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthNotice("");
+    try {
+      const payload = await requestJson(
+        "/api/auth/password-reset/confirm",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: resetToken, password: resetPassword }),
+        },
+        "Password reset",
+      );
+      setAuthUser(payload.user || null);
+      persistCsrfToken(payload.csrf_token || "");
+      setResetPassword("");
+      setResetToken("");
+      clearResetTokenFromUrl();
+      setAuthNotice("Password updated. You are now signed in.");
+      await refreshProjects(payload.user || null);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Password reset failed."));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function saveCurrentProject(options?: { silent?: boolean }) {
+    if (!authUser) {
+      if (!options?.silent) setAuthError("Log in to save decks.");
+      return;
+    }
+    setProjectBusy(true);
+    if (!options?.silent) {
+      setAuthError("");
+      setAuthNotice("");
+    }
+    try {
+      const derivedName = (projectName || analysis?.deck_name || commanderLabel || "Untitled Project").trim() || "Untitled Project";
+      const matchingProject = projects.find((project: any) => project?.name_key === normalizeProjectNameKey(derivedName));
+      const targetProjectId = currentProjectId || matchingProject?.id || null;
+      const payload = await requestJson(
+        targetProjectId ? `/api/projects/${targetProjectId}` : "/api/projects",
+        {
+          method: targetProjectId ? "PUT" : "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            name: derivedName,
+            deck_name: analysis?.deck_name || derivedName,
+            commander_label: commanderLabel,
+            decklist_text: decklist,
+            bracket,
+            summary: {
+              deck_name: analysis?.deck_name || derivedName,
+              commander_label: commanderLabel,
+              card_count: parsedCount,
+              auto_win_plans: detectedWincons,
+              color_identity: colorIdentity,
+              has_analysis: Boolean(analysis || simRes || guides),
+            },
+            saved_bundle: {
+              settings: {
+                bracket,
+                policy,
+                simRuns,
+                turnLimit,
+                tablePressure,
+                mulliganAggression,
+                commanderPriority,
+                budgetMaxUsd,
+                showAdvancedSettings,
+              },
+              parseRes,
+              tagRes,
+              simRes,
+              analysis,
+              guides,
+              comboRes,
+              rulesWatchoutsRes,
+              detectedWincons,
+              status,
+            },
+          }),
+        },
+        targetProjectId ? "Project update" : "Project save",
+      );
+      setCurrentProjectId(payload.id);
+      setProjectName(payload.name || derivedName);
+      setExpandedProjectId(payload.id);
+      await refreshProjects();
+      const versionsPayload = await requestJson(`/api/projects/${payload.id}/versions`, { method: "GET" }, "Project version history");
+      setProjectVersions((prev) => ({ ...prev, [payload.id]: versionsPayload.versions || [] }));
+      if (!options?.silent) setAuthNotice(targetProjectId ? "Saved as a new version." : "Saved.");
+    } catch (err: any) {
+      if (!options?.silent) setAuthError(normalizeUiError(err, "Saving the deck failed."));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function loadProject(projectId: number) {
+    setProjectBusy(true);
+    setAuthError("");
+    try {
+      const payload = await requestJson(`/api/projects/${projectId}`, { method: "GET" }, "Project load");
+      applySavedBundle(payload);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Loading the saved deck failed."));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function toggleProjectVersions(projectId: number) {
+    if (expandedProjectId === projectId) {
+      setExpandedProjectId(null);
+      return;
+    }
+    setExpandedProjectId(projectId);
+    if (projectVersions[projectId]) return;
+    setProjectBusy(true);
+    try {
+      const payload = await requestJson(`/api/projects/${projectId}/versions`, { method: "GET" }, "Project version history");
+      setProjectVersions((prev) => ({ ...prev, [projectId]: payload.versions || [] }));
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Loading project history failed."));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function loadProjectVersion(projectId: number, versionId: number) {
+    setProjectBusy(true);
+    setAuthError("");
+    try {
+      const payload = await requestJson(`/api/projects/${projectId}/versions/${versionId}`, { method: "GET" }, "Project version load");
+      applySavedBundle(payload);
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Loading the saved deck version failed."));
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function deleteProject(projectId: number) {
+    setProjectBusy(true);
+    setAuthError("");
+    try {
+      await requestJson(`/api/projects/${projectId}`, { method: "DELETE", headers: authHeaders() }, "Project delete");
+      if (currentProjectId === projectId) {
+        setCurrentProjectId(null);
+      }
+      await refreshProjects();
+    } catch (err: any) {
+      setAuthError(normalizeUiError(err, "Deleting the saved deck failed."));
+    } finally {
+      setProjectBusy(false);
+    }
   }
 
   function cardDisplay(name: string) {
@@ -1528,9 +1881,15 @@ export default function HomePage() {
           );
           if (activeRunRef.current !== runId) return;
           setGuides(gd);
+          if (authUser) {
+            await saveCurrentProject({ silent: true });
+          }
           updateStatus("done");
         } catch {
           if (activeRunRef.current !== runId) return;
+          if (authUser) {
+            await saveCurrentProject({ silent: true });
+          }
           updateStatus("analysis ready");
         }
       })();
@@ -1672,10 +2031,47 @@ export default function HomePage() {
   }, [selectedCard, tagRes, parseRes?.commander, parseRes?.commanders, budgetMaxUsd]);
 
   useEffect(() => {
+    void (async () => {
+      try {
+        if (typeof window !== "undefined") {
+          const stored = window.localStorage.getItem(AUTH_CSRF_STORAGE_KEY) || "";
+          if (stored) setCsrfToken(stored);
+          const params = new URLSearchParams(window.location.search);
+          const linkedResetToken = params.get("reset_token") || "";
+          if (linkedResetToken) {
+            setResetToken(linkedResetToken);
+            setAuthNotice("Magic link received. Choose a new password to finish recovery.");
+          }
+        }
+        const payload = await requestJson("/api/auth/session", { method: "GET" }, "Session restore");
+        setAuthUser(payload.user || null);
+        persistCsrfToken(payload.csrf_token || "");
+        if (payload.user) {
+          const projectsPayload = await requestJson("/api/projects", { method: "GET" }, "Project list");
+          setProjects(projectsPayload.projects || []);
+        }
+      } catch {
+        setAuthUser(null);
+        setProjects([]);
+      } finally {
+        setAuthChecked(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     if (selectedCard) {
       setMobilePane("views");
     }
   }, [selectedCard]);
+
+  useEffect(() => {
+    if (currentProjectId || projectName.trim()) return;
+    const nextName = String(analysis?.deck_name || commanderLabel || "").trim();
+    if (nextName) {
+      setProjectName(nextName);
+    }
+  }, [analysis?.deck_name, commanderLabel, currentProjectId, projectName]);
 
   useEffect(() => {
     void (async () => {
@@ -1772,6 +2168,100 @@ export default function HomePage() {
                   {option === "system" ? "System" : option[0].toUpperCase() + option.slice(1)}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div className="sidebar-group sidebar-pane">
+            <div className="sidebar-section-label">Account</div>
+            <div className="stack">
+              {!authChecked ? (
+                <p className="control-help">Checking session…</p>
+              ) : authUser ? (
+                <>
+                  <p className="control-help">Signed in as <strong>{authUser.email}</strong></p>
+                  <label>Saved deck name</label>
+                  <input
+                    className="input"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder={analysis?.deck_name || commanderLabel || "Untitled Project"}
+                  />
+                  <div className="sidebar-inline-actions">
+                    <button className="btn" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy}>
+                      {projectBusy ? "Saving..." : currentProjectId ? "Update save" : "Save current deck"}
+                    </button>
+                    <button className="btn" onClick={handleLogout} disabled={authBusy}>
+                      Sign out
+                    </button>
+                  </div>
+                  <p className="control-help">Saved projects keep the decklist, settings, and the latest available analysis bundle.</p>
+                  <div className="saved-projects-list">
+                    {(projects || []).map((project: any) => (
+                      <div key={project.id} className="saved-project-row">
+                        <button className="saved-project-main" onClick={() => toggleProjectVersions(project.id)} disabled={projectBusy}>
+                          <strong>{project.name || project.deck_name}</strong>
+                          <span>{project.commander_label || project.deck_name}</span>
+                          <span>{new Date(project.updated_at).toLocaleString()} · {project.version_count || 1} version{Number(project.version_count || 1) === 1 ? "" : "s"}</span>
+                        </button>
+                        <button
+                          className="btn saved-project-delete"
+                          onClick={() => deleteProject(project.id)}
+                          disabled={projectBusy}
+                          aria-label={`Delete ${project.name || project.deck_name}`}
+                        >
+                          Delete
+                        </button>
+                        {expandedProjectId === project.id ? (
+                          <div className="saved-project-versions">
+                            {(projectVersions[project.id] || []).map((version: any) => (
+                              <button
+                                key={version.id}
+                                className="saved-project-version"
+                                onClick={() => loadProjectVersion(project.id, version.id)}
+                                disabled={projectBusy}
+                              >
+                                <strong>Version {version.version_number}</strong>
+                                <span>{new Date(version.created_at).toLocaleString()}</span>
+                              </button>
+                            ))}
+                            {!(projectVersions[project.id] || []).length ? <p className="control-help">No version snapshots yet.</p> : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                    {!projects.length ? <p className="control-help">No saved decks yet.</p> : null}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {resetToken ? (
+                    <>
+                      <label>New password</label>
+                      <input className="input" type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="At least 10 characters" />
+                      <div className="sidebar-inline-actions">
+                        <button className="btn" onClick={confirmPasswordReset} disabled={authBusy}>Set new password</button>
+                        <button className="btn" onClick={() => { setResetToken(""); setResetPassword(""); clearResetTokenFromUrl(); setAuthNotice(""); }}>Back to login</button>
+                      </div>
+                      <p className="control-help">This one-time magic link can only be used once and expires quickly.</p>
+                    </>
+                  ) : (
+                    <>
+                      <label>Email</label>
+                      <input className="input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="you@example.com" />
+                      <label>Password</label>
+                      <input className="input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="At least 10 characters" />
+                      <div className="sidebar-inline-actions">
+                        <button className="btn" onClick={() => handleAuth("login")} disabled={authBusy}>Log in</button>
+                        <button className="btn" onClick={() => handleAuth("register")} disabled={authBusy}>Create account</button>
+                        <button className="btn" onClick={requestPasswordReset} disabled={authBusy}>Email reset link</button>
+                      </div>
+                      <p className="control-help">Accounts let you save decklists together with their last tagged and analyzed state.</p>
+                    </>
+                  )}
+                </>
+              )}
+              {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
+              {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
             </div>
           </div>
 
@@ -3473,6 +3963,28 @@ export default function HomePage() {
           {tab === "Primer" && (
             <div className="guide-rendered">
               <ReactMarkdown>{guides?.play_guide_md || "Run analysis first."}</ReactMarkdown>
+            </div>
+          )}
+
+          {tab === "Rule 0" && (
+            <div className="guide-rendered">
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <p className="control-help" style={{ margin: 0 }}>
+                  Copy this into a Rule 0 conversation for a compact but honest summary of speed, combo pressure, interaction, and table expectations.
+                </p>
+                <button
+                  className="btn"
+                  onClick={async () => {
+                    const text = guides?.rule0_brief_md || "";
+                    if (!text) return;
+                    await navigator.clipboard.writeText(text);
+                  }}
+                  disabled={!guides?.rule0_brief_md}
+                >
+                  Copy Rule 0 Brief
+                </button>
+              </div>
+              <ReactMarkdown>{guides?.rule0_brief_md || "Run full analysis first."}</ReactMarkdown>
             </div>
           )}
             </>

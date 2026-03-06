@@ -270,4 +270,51 @@ Pilot note:
 ## 12. First Upgrade Moves (Highest Impact)
 {_lines(action_lines[:6])}
 """
-    return {"optimization_guide_md": optimization, "play_guide_md": play}
+    role_breakdown = analyze.get("role_breakdown", {}).get("roles", {}) if isinstance(analyze.get("role_breakdown"), dict) else {}
+    stax_count = int(role_breakdown.get("#Stax", 0) or role_breakdown.get("#Tax", 0) or 0)
+    tutor_count = int(role_breakdown.get("#Tutor", 0) or 0)
+    fast_mana_count = int(role_breakdown.get("#FastMana", 0) or 0)
+    wipe_count = int(role_breakdown.get("#Boardwipe", 0) or role_breakdown.get("#MassRemoval", 0) or 0)
+    interaction_density = int(role_breakdown.get("#Removal", 0) or 0) + int(role_breakdown.get("#Counter", 0) or 0)
+
+    rule0 = f"""# RULE 0 BRIEF
+
+## What this deck is trying to do
+- Commander(s): {intent.get('commander') or analyze.get('commander') or 'n/a'}
+- Primary plan: {intent.get('primary_plan', 'n/a')}
+- Backup plan: {intent.get('secondary_plan', 'n/a')}
+- Main win routes: {', '.join(intent.get('kill_vectors', [])) or 'n/a'}
+- Key engines: {_fmt_cards(engine_cards, 'engine cards')}
+
+## Speed and expected game texture
+- Sample size: {sim_summary.get('runs', 0)} goldfish runs
+- 4 mana by turn 3: {_to_pct(p_4_mana_t3)}
+- 5 mana by turn 4: {_to_pct(p_5_mana_t4)}
+- Median commander cast turn: {median_commander}
+- Median win turn: {win.get('median_win_turn', 'n/a')}
+- Most common win route: {win.get('most_common_wincon') or 'n/a'}
+
+## Pressure points other players may care about
+- Fast mana pieces tracked: {fast_mana_count}
+- Tutors tracked: {tutor_count}
+- Board wipes tracked: {wipe_count}
+- General interaction pieces tracked: {interaction_density}
+- Stax / tax pressure pieces tracked: {stax_count}
+
+## Combo disclosure
+- Complete CommanderSpellbook combos in the list: {len(complete)}
+- One-card-away CommanderSpellbook lines: {len(near)}
+
+Contained combo lines:
+{_lines(complete_lines)}
+
+One-card-away lines:
+{_lines(near_lines)}
+
+## Pilot honesty notes
+- This deck is strongest when it opens with {_fmt_cards(support_cards, 'cheap setup')} and transitions into {_fmt_cards(engine_cards, 'engines')}.
+- The main finish package centers on {_fmt_cards(wincon_cards, 'finishers')}.
+- In testing, the most common failure modes were mana screw at {_to_pct(failure.get('mana_screw', 0))} and no-action starts at {_to_pct(failure.get('no_action', 0))}.
+- If the table wants to tune this down, the cleanest knobs are tutor density, fast mana, and whether full combo lines are considered live win routes.
+"""
+    return {"optimization_guide_md": optimization, "play_guide_md": play, "rule0_brief_md": rule0}

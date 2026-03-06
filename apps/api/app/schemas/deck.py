@@ -162,6 +162,7 @@ class GuideRequest(BaseModel):
 class GuideResponse(BaseModel):
     optimization_guide_md: str
     play_guide_md: str
+    rule0_brief_md: str
 
 
 class SimRunRequest(BaseModel):

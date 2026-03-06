@@ -291,7 +291,11 @@ def test_guide_enrichment_injects_hidden_overview(monkeypatch):
     })
     monkeypatch.setattr(svc, "run_consistency_audit", lambda evidence, sections: {"status": "pass", "issues": []})
 
-    guides = {"optimization_guide_md": "# OPTIMIZATION GUIDE\n\nBase text", "play_guide_md": "# COMMANDER PRIMER\n\nBase play text"}
+    guides = {
+        "optimization_guide_md": "# OPTIMIZATION GUIDE\n\nBase text",
+        "play_guide_md": "# COMMANDER PRIMER\n\nBase play text",
+        "rule0_brief_md": "# RULE 0 BRIEF\n\nBase rule 0 text",
+    }
     analyze = {
         "intent_summary": {"primary_plan": "Value", "commander": "The Peregrine Dynamo"},
         "combo_intel": {"matched_variants": []},
@@ -363,7 +367,15 @@ def test_analyze_route_uses_hidden_enrichment(monkeypatch):
 
 def test_guides_route_keeps_public_contract(monkeypatch):
     _ensure_tables()
-    monkeypatch.setattr(routes, "generate_guides", lambda analyze, sim_summary: {"optimization_guide_md": "# OPTIMIZATION GUIDE\n\nBase", "play_guide_md": "# COMMANDER PRIMER\n\nBase"})
+    monkeypatch.setattr(
+        routes,
+        "generate_guides",
+        lambda analyze, sim_summary: {
+            "optimization_guide_md": "# OPTIMIZATION GUIDE\n\nBase",
+            "play_guide_md": "# COMMANDER PRIMER\n\nBase",
+            "rule0_brief_md": "# RULE 0 BRIEF\n\nBase",
+        },
+    )
     monkeypatch.setattr(routes.AIEnrichmentService, "enrich_guides", lambda self, analyze, sim_summary, guides: {**guides, "play_guide_md": guides["play_guide_md"] + "\n\n## Pilot snapshot\nHidden enrichment."})
 
     db = SessionLocal()
