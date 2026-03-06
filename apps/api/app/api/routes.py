@@ -511,6 +511,7 @@ def run_sim(req: SimRunRequest, db: Session = Depends(get_db)):
 
     db.add(SimJob(job_id=job_id, status="queued", payload=payload))
     db.commit()
+    db.close()
 
     workers_live = _has_live_workers()
     if workers_live:

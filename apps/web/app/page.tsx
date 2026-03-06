@@ -2187,7 +2187,7 @@ export default function HomePage() {
                     placeholder={analysis?.deck_name || commanderLabel || "Untitled Project"}
                   />
                   <div className="sidebar-inline-actions">
-                    <button className="btn" onClick={saveCurrentProject} disabled={projectBusy}>
+                    <button className="btn" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy}>
                       {projectBusy ? "Saving..." : currentProjectId ? "Update save" : "Save current deck"}
                     </button>
                     <button className="btn" onClick={handleLogout} disabled={authBusy}>
