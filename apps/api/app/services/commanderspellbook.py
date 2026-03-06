@@ -9,21 +9,30 @@ from typing import Any, Dict, Iterable, List, Set
 import httpx
 
 from app.workers.queue import redis_conn
+from app.services.commander_utils import normalize_name
 
 COMMANDERSPELLBOOK_VARIANTS_URL = "https://backend.commanderspellbook.com/variants/"
 BASIC_LANDS = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 
-def _deck_hash(cards: Iterable[str], commander: str | None) -> str:
+def _commander_list(commander: str | List[str] | None) -> List[str]:
+    if isinstance(commander, list):
+        return [str(name).strip() for name in commander if str(name or "").strip()]
+    if commander and str(commander).strip():
+        return [str(commander).strip()]
+    return []
+
+
+def _deck_hash(cards: Iterable[str], commander: str | List[str] | None) -> str:
     payload = {
-        "commander": (commander or "").strip().lower(),
+        "commanders": sorted({normalize_name(name) for name in _commander_list(commander)}),
         "cards": sorted({c.strip().lower() for c in cards if c and c.strip()}),
     }
     stable = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(stable.encode()).hexdigest()
 
 
-def _normalize_variant(raw: Dict[str, Any], deck_names: Set[str], commander: str | None) -> Dict[str, Any]:
+def _normalize_variant(raw: Dict[str, Any], deck_names: Set[str], commander: str | List[str] | None) -> Dict[str, Any]:
     uses = raw.get("uses") or []
     name_set = {str(u.get("card", {}).get("name") or u.get("name") or "").strip() for u in uses}
     name_set = {n for n in name_set if n}
@@ -43,7 +52,8 @@ def _normalize_variant(raw: Dict[str, Any], deck_names: Set[str], commander: str
     recipe = str(raw.get("description") or raw.get("notes") or "").strip().replace("\n", " ")
     variant_id = str(raw.get("id") or raw.get("variant_id") or "")
     identity = str(raw.get("identity") or "")
-    commander_bonus = 0.05 if commander and commander in present else 0.0
+    commander_set = set(_commander_list(commander))
+    commander_bonus = 0.05 if commander_set & set(present) else 0.0
     base_score = coverage * 0.75 + (0.2 if status == "complete" else 0.08 if status == "near_miss" else 0.0)
     score = round(min(1.0, base_score + commander_bonus), 4)
     source_url = f"https://commanderspellbook.com/combo/{variant_id}" if variant_id else "https://commanderspellbook.com"
@@ -68,8 +78,9 @@ class ComboIntelService:
         self.retries = retries
         self.ttl_seconds = ttl_seconds
 
-    def _cache_key(self, cards: List[str], commander: str | None) -> str:
-        return f"combointel:{_deck_hash(cards, commander)}:{(commander or '').strip().lower()}"
+    def _cache_key(self, cards: List[str], commander: str | List[str] | None) -> str:
+        commander_key = ",".join(sorted(normalize_name(name) for name in _commander_list(commander)))
+        return f"combointel:v3:{_deck_hash(cards, commander)}:{commander_key}"
 
     def _read_cache(self, key: str) -> Dict[str, Any] | None:
         try:
@@ -130,7 +141,7 @@ class ComboIntelService:
                     break
         return list(unique_rows.values())[:limit]
 
-    def get_combo_intel(self, cards: List[str], commander: str | None = None, max_variants: int = 200) -> Dict[str, Any]:
+    def get_combo_intel(self, cards: List[str], commander: str | List[str] | None = None, max_variants: int = 200) -> Dict[str, Any]:
         key = self._cache_key(cards, commander)
         cached = self._read_cache(key)
         if cached:
@@ -141,7 +152,7 @@ class ComboIntelService:
         attempts = self.retries + 1
         for attempt in range(attempts):
             try:
-                query_cards = ([commander] if commander else []) + cards
+                query_cards = _commander_list(commander) + cards
                 variants_raw = self._fetch_variants_for_cards(query_cards, limit=max_variants)
                 break
             except Exception as exc:
@@ -156,7 +167,9 @@ class ComboIntelService:
         if len(variants_raw) >= max_variants:
             warnings.append(f"CommanderSpellbook results capped at {max_variants} variants; some combo lines may be omitted.")
         matched = [v for v in normalized if v["status"] == "complete"]
+        near_miss = [v for v in normalized if v["status"] == "near_miss" and int(v.get("missing_count", 99)) == 1]
         matched.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
+        near_miss.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
         support_score = 0.0
         if matched:
             top_weight = sum(v["score"] for v in matched[:10]) / min(10, len(matched))
@@ -169,7 +182,7 @@ class ComboIntelService:
             "source_hash": hashlib.sha256(json.dumps(matched, sort_keys=True).encode()).hexdigest() if matched else "",
             "combo_support_score": support_score,
             "matched_variants": matched,
-            "near_miss_variants": [],
+            "near_miss_variants": near_miss,
             "warnings": warnings,
         }
         self._write_cache(key, result)

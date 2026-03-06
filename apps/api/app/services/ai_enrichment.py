@@ -565,6 +565,9 @@ class AIEnrichmentService:
                     "rulings": watchout.get("rulings", []),
                     "rule_hits": (evidence.get("watchouts", {}).get(card) or {}).get("rule_hits", []),
                     "oracle_text": (evidence.get("watchouts", {}).get(card) or {}).get("oracle_text", ""),
+                    "existing_errata": watchout.get("errata", []),
+                    "existing_notes": watchout.get("notes", []),
+                    "existing_rules_information": watchout.get("rules_information", []),
                 }
             )
         prompt = {
@@ -640,9 +643,13 @@ class AIEnrichmentService:
             card = str(watchout.get("card") or "")
             item = by_card.get(card)
             if not item:
-                continue
+                item = {"errata": [], "notes": [], "rules_information": []}
             oracle_texts = [str((evidence.get("watchouts", {}).get(card) or {}).get("oracle_text") or "")]
-            sections = {"errata": [], "notes": [], "rules_information": []}
+            sections = {
+                "errata": [str(x).strip() for x in (watchout.get("errata") or []) if str(x).strip()],
+                "notes": [str(x).strip() for x in (watchout.get("notes") or []) if str(x).strip()],
+                "rules_information": [str(x).strip() for x in (watchout.get("rules_information") or []) if str(x).strip()],
+            }
             for key in sections.keys():
                 for idx, block in enumerate(item.get(key, [])):
                     ok, reasons = self._validate_text_block(
@@ -655,7 +662,8 @@ class AIEnrichmentService:
                         section_key=f"{card}:{key}:{idx}",
                     )
                     if ok and block["text"].strip():
-                        sections[key].append(block["text"].strip())
+                        if block["text"].strip() not in sections[key]:
+                            sections[key].append(block["text"].strip())
                     else:
                         issues.extend(reasons)
             if not sections["errata"] and not sections["notes"] and not sections["rules_information"]:

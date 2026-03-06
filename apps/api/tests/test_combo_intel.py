@@ -87,7 +87,7 @@ def test_combo_service_keeps_full_complete_catalog(monkeypatch):
     assert len(out["matched_variants"]) == 12
 
 
-def test_combo_service_excludes_near_miss_lines(monkeypatch):
+def test_combo_service_keeps_only_one_card_near_miss_lines(monkeypatch):
     from app.services import commanderspellbook as csb
 
     monkeypatch.setattr(csb, "redis_conn", _FakeRedis())
@@ -100,15 +100,20 @@ def test_combo_service_excludes_near_miss_lines(monkeypatch):
         },
         {
             "id": 11,
-            "description": "Near miss line",
+            "description": "One card short",
             "uses": [{"card": {"name": "A"}}, {"card": {"name": "C"}}],
+        },
+        {
+            "id": 12,
+            "description": "Two cards short",
+            "uses": [{"card": {"name": "A"}}, {"card": {"name": "D"}}, {"card": {"name": "E"}}],
         },
     ]
 
     monkeypatch.setattr(svc, "_fetch_variants_for_cards", lambda cards, limit=200: fake_rows)
     out = svc.get_combo_intel(["A", "B"], commander="Cmdr")
     assert [v["variant_id"] for v in out["matched_variants"]] == ["10"]
-    assert out["near_miss_variants"] == []
+    assert [v["variant_id"] for v in out["near_miss_variants"]] == ["11"]
 
 
 def test_analyzer_includes_combo_intel(monkeypatch):

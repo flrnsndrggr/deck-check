@@ -1590,17 +1590,16 @@ export default function HomePage() {
             </h2>
             <p className="muted">Bracket-aware parser, tags, goldfish, and optimization.</p>
             <div className="sidebar-status-row">
-              <span className="status-chip" data-tone={progressTone(sidebarProgressMeta)}>
-                {sidebarProgressMeta.show ? sidebarProgressMeta.label : "Ready"}
-              </span>
+              {sidebarProgressMeta.show ? (
+                <span className="status-chip" data-tone={progressTone(sidebarProgressMeta)}>
+                  {sidebarProgressMeta.label}
+                </span>
+              ) : null}
               <span className="status-chip" data-tone="accent">Bracket {bracket}</span>
             </div>
             <div className="sidebar-meta">
               <p className="control-help">
                 Rules/data refresh: {updatesMeta?.sources?.[0]?.last_fetched_at ? new Date(updatesMeta.sources[0].last_fetched_at).toLocaleString() : "not fetched yet"}
-              </p>
-              <p className="control-help">
-                Theme: {themeMode === "system" ? `System (${resolvedTheme})` : themeMode}
               </p>
             </div>
             <div className="theme-toggle" role="group" aria-label="Theme mode">

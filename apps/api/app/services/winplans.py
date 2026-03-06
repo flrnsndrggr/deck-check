@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List
 
 from app.schemas.deck import CardEntry
+from app.services.commander_utils import commander_names_from_cards, normalize_name as normalize_commander_name
 
 WINCON_ORDER = [
     "Combo",
@@ -182,10 +183,12 @@ def _alt_win_kind(text: str) -> str | None:
     return "generic"
 
 
-def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, Any]], commander: str | None) -> List[Dict[str, Any]]:
-    commander_key = _normalize_name(commander)
+def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, Any]], commander: List[str] | str | None) -> List[Dict[str, Any]]:
+    card_list = list(cards)
+    commander_names = commander if isinstance(commander, list) else commander_names_from_cards(card_list, fallback_commander=commander)
+    commander_keys = {normalize_commander_name(name) for name in commander_names}
     out: List[Dict[str, Any]] = []
-    for entry in cards:
+    for entry in card_list:
         payload = card_map.get(entry.name, {}) or {}
         text = _text(payload)
         type_line = str(payload.get("type_line") or "").lower()
@@ -201,7 +204,7 @@ def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, A
         alt_kind = _alt_win_kind(text)
         is_creature = "creature" in type_line
         is_permanent = any(t in type_line for t in ("artifact", "creature", "enchantment", "planeswalker", "battle", "land"))
-        is_commander = commander_key and _normalize_name(entry.name) == commander_key
+        is_commander = entry.section == "commander" or _normalize_name(entry.name) in commander_keys
 
         hints = set()
         if is_creature or "#Tokens" in entry.tags:
@@ -255,7 +258,7 @@ def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, A
     return out
 
 
-def infer_supported_wincons(cards: List[Dict[str, Any]], commander: str | None, combo_intel: Dict[str, Any] | None = None) -> List[str]:
+def infer_supported_wincons(cards: List[Dict[str, Any]], commander: List[str] | str | None, combo_intel: Dict[str, Any] | None = None) -> List[str]:
     combo_intel = combo_intel or {}
     counts = {name: 0.0 for name in WINCON_ORDER}
     creature_power = 0.0
@@ -290,7 +293,8 @@ def infer_supported_wincons(cards: List[Dict[str, Any]], commander: str | None, 
     elif counts.get("Combo", 0.0) >= 2 and tutors >= 1:
         counts["Combo"] += 1.5
 
-    if commander and (commander_power >= 4 or commander_support >= 3 or protection >= 2):
+    commander_names = commander if isinstance(commander, list) else ([commander] if commander else [])
+    if commander_names and (commander_power >= 4 or commander_support >= 3 or protection >= 2):
         counts["Commander Damage"] += 2.0
     if creature_power >= 18:
         counts["Combat"] += 2.0

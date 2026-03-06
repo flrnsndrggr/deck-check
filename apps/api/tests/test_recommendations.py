@@ -155,3 +155,35 @@ def test_analyze_adds_align_with_missing_roles(monkeypatch):
     fills = {a.get("fills") for a in out["adds"]}
     assert "#Ramp" in fills
     assert "#Draw" not in fills
+
+
+def test_analyze_never_lists_commander_as_cut_or_swap(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.analyzer.importance_scores",
+        lambda cards, sim_summary: [
+            {"card": "Commander", "score": -0.9, "tags": ["#Engine"]},
+            {"card": "Filler Card", "score": -0.8, "tags": ["#Utility"]},
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.analyzer.suggest_adds",
+        lambda *args, **kwargs: [{"card": "Upgrade Card", "fills": "#Ramp", "why": "x", "source": "heuristic"}],
+    )
+    cards = [
+        CardEntry(qty=1, name="Commander", section="commander", tags=["#Engine"]),
+        CardEntry(qty=1, name="Filler Card", section="deck", tags=["#Utility"]),
+    ]
+    out = az.analyze(
+        cards=cards,
+        sim_summary={"milestones": {"p_mana4_t3": 0.4, "p_mana5_t4": 0.3}, "failure_modes": {}, "win_metrics": {}},
+        bracket_report={"bracket": 3, "violations": []},
+        template="balanced",
+        commander_ci="",
+        commander="Commander",
+        commander_colors=[],
+        combo_intel={"matched_variants": [], "near_miss_variants": [], "combo_support_score": 0},
+    )
+
+    assert not any(c.get("card") == "Commander" for c in out["cuts"])
+    assert not any(s.get("cut") == "Commander" for s in out["swaps"])
+    assert any(c.get("card") == "Filler Card" for c in out["cuts"])

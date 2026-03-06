@@ -1947,3 +1947,606 @@ body::after {
     min-width: 100%;
   }
 }
+
+/* Workspace cleanup: keep the theme system, remove the heavy treatment. */
+:root,
+html[data-theme="light"] {
+  --bg: #f6f6f7;
+  --panel: #fbfbfc;
+  --ink: #151515;
+  --muted: #6f6f73;
+  --border: #e7e7ea;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --surface-1: #fbfbfc;
+  --surface-2: #ffffff;
+  --surface-3: #f3f4f6;
+  --elevated: #ffffff;
+  --rail-bg: #fbfbfc;
+  --workspace-bg: #fbfbfc;
+  --border-strong: #d8dbe1;
+  --ink-soft: #2a2a2f;
+  --muted-2: #83838b;
+  --accent-primary: #4d5e85;
+  --accent-secondary: #7b879f;
+  --accent-gold: #6f6f73;
+  --success: #4f8463;
+  --warning: #a88445;
+  --danger: #a06168;
+  --tone-accent-bg: rgba(77, 94, 133, 0.08);
+  --tone-accent-border: rgba(77, 94, 133, 0.2);
+  --tone-success-bg: rgba(79, 132, 99, 0.08);
+  --tone-success-border: rgba(79, 132, 99, 0.2);
+  --tone-warning-bg: rgba(168, 132, 69, 0.08);
+  --tone-warning-border: rgba(168, 132, 69, 0.2);
+  --tone-danger-bg: rgba(160, 97, 104, 0.08);
+  --tone-danger-border: rgba(160, 97, 104, 0.2);
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-card: none;
+  --focus-ring: 0 0 0 3px rgba(77, 94, 133, 0.14);
+}
+
+html[data-theme="dark"] {
+  --bg: #111315;
+  --panel: #171a1e;
+  --ink: #edf1f5;
+  --muted: #9ca6b5;
+  --border: #2d333c;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --surface-1: #171a1e;
+  --surface-2: #1d2127;
+  --surface-3: #232830;
+  --elevated: #1d2127;
+  --rail-bg: #171a1e;
+  --workspace-bg: #171a1e;
+  --border-strong: #39414d;
+  --ink-soft: #dfe4ec;
+  --muted-2: #7f8998;
+  --accent-primary: #8aa1cf;
+  --accent-secondary: #66779b;
+  --accent-gold: #9ca6b5;
+  --success: #7db08f;
+  --warning: #c9a35f;
+  --danger: #c47a82;
+  --tone-accent-bg: rgba(138, 161, 207, 0.14);
+  --tone-accent-border: rgba(138, 161, 207, 0.28);
+  --tone-success-bg: rgba(125, 176, 143, 0.12);
+  --tone-success-border: rgba(125, 176, 143, 0.28);
+  --tone-warning-bg: rgba(201, 163, 95, 0.12);
+  --tone-warning-border: rgba(201, 163, 95, 0.28);
+  --tone-danger-bg: rgba(196, 122, 130, 0.12);
+  --tone-danger-border: rgba(196, 122, 130, 0.28);
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-card: none;
+  --focus-ring: 0 0 0 3px rgba(138, 161, 207, 0.18);
+}
+
+body::before,
+body::after {
+  display: none;
+}
+
+.ui-sidebar {
+  background: var(--panel);
+  backdrop-filter: none;
+  border-right: 1px solid var(--border);
+  padding: 12px 10px;
+  gap: 12px;
+  overflow: auto;
+}
+
+.sidebar-scroll {
+  padding-right: 0;
+  gap: 12px;
+}
+
+.sidebar-brand {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  gap: 10px;
+}
+
+.sidebar-brand > .sidebar-section-label {
+  display: none;
+}
+
+.sidebar-group {
+  gap: 6px;
+}
+
+.sidebar-section-label,
+.panel-kicker {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.panel-kicker {
+  display: none;
+}
+
+.wordmark,
+.panel-title-row h3,
+.resource-empty-state h2,
+.guide-rendered h1,
+.guide-rendered h2,
+.card-detail-title,
+.insight-title {
+  font-family: var(--font-ui), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.wordmark {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  gap: 9px;
+}
+
+.wordmark-glyph {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--surface-1);
+  box-shadow: none;
+}
+
+.theme-toggle {
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+.theme-option {
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.theme-option.is-active {
+  background: var(--surface-2);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.sidebar-footer {
+  padding-top: 8px;
+  background: var(--panel);
+  backdrop-filter: none;
+}
+
+.sidebar-run-btn {
+  min-height: 40px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.ui-detail {
+  background: var(--panel);
+  backdrop-filter: none;
+}
+
+.ui-main {
+  background: var(--panel);
+  padding: 16px 22px;
+}
+
+.ui-shell.detail-open .ui-detail {
+  border-right-color: var(--border);
+  padding: 14px;
+}
+
+.outcome-content {
+  padding-right: 10px;
+}
+
+.outcome-header {
+  margin-bottom: 12px;
+}
+
+.panel-title-row,
+.panel-heading-group {
+  gap: 10px;
+}
+
+.panel-heading-group {
+  gap: 4px;
+}
+
+.panel-progress-inline {
+  min-width: min(320px, 100%);
+  max-width: 420px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel-progress-track {
+  background: var(--border);
+}
+
+.panel-progress-fill {
+  background: var(--ink);
+}
+
+.panel-progress-fill.is-error {
+  background: var(--danger);
+}
+
+.block,
+.legal-card,
+.card-detail-row,
+.metric-help,
+.deck-blurb,
+.setting-toggle,
+.import-notice,
+.insight-no-metrics {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  box-shadow: none;
+}
+
+.block[data-surface="1"],
+.decklist-panel[data-surface="1"],
+.outcome-body[data-surface="1"],
+.sidebar-brand[data-surface="1"],
+.block[data-surface="3"],
+.mini-card[data-surface="3"],
+.tone-card[data-surface="3"] {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.kpi-grid {
+  gap: 8px;
+}
+
+.mini-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.mini-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.mini-value {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.status-chip,
+.tone-card,
+.import-notice {
+  background: var(--surface-2);
+}
+
+.status-chip {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.status-chip[data-tone="accent"],
+.mini-card[data-tone="accent"],
+.tone-card[data-tone="accent"],
+.import-notice[data-tone="accent"] {
+  border-color: var(--tone-accent-border);
+  background: var(--surface-2);
+  color: var(--accent-primary);
+}
+
+.status-chip[data-tone="success"],
+.mini-card[data-tone="success"],
+.tone-card[data-tone="success"],
+.import-notice[data-tone="success"] {
+  border-color: var(--tone-success-border);
+  background: var(--surface-2);
+  color: var(--success);
+}
+
+.status-chip[data-tone="warning"],
+.mini-card[data-tone="warning"],
+.tone-card[data-tone="warning"],
+.import-notice[data-tone="warning"] {
+  border-color: var(--tone-warning-border);
+  background: var(--surface-2);
+  color: var(--warning);
+}
+
+.status-chip[data-tone="danger"],
+.mini-card[data-tone="danger"],
+.tone-card[data-tone="danger"],
+.import-notice[data-tone="danger"] {
+  border-color: var(--tone-danger-border);
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
+.mini-card[data-tone="accent"] .mini-value,
+.mini-card[data-tone="accent"] .mini-label,
+.mini-card[data-tone="success"] .mini-value,
+.mini-card[data-tone="success"] .mini-label,
+.mini-card[data-tone="warning"] .mini-value,
+.mini-card[data-tone="warning"] .mini-label,
+.mini-card[data-tone="danger"] .mini-value,
+.mini-card[data-tone="danger"] .mini-label {
+  color: inherit;
+}
+
+.input,
+.textarea,
+.select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.btn,
+.theme-option,
+.input,
+.textarea,
+.select,
+.insight-close {
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 7px 12px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.btn:hover:not(:disabled),
+.theme-option:hover,
+.insight-close:hover {
+  transform: none;
+}
+
+.btn-primary,
+.btn.active {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface-1);
+  box-shadow: none;
+}
+
+.btn:not(.btn-primary):hover:not(:disabled) {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.btn:focus-visible,
+.theme-option:focus-visible,
+.input:focus-visible,
+.textarea:focus-visible,
+.select:focus-visible,
+.insight-close:focus-visible {
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.setting-toggle {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.advanced-settings {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.control-help {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.decklist-mode-bar,
+.tab-list {
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+.decklist-tagged-export,
+.resource-empty-state,
+.card-preview-scroll {
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.resource-empty-state {
+  min-height: 280px;
+  border: 1px dashed var(--border);
+}
+
+.table th,
+.table td {
+  border-bottom-color: var(--border);
+}
+
+.table thead th,
+.card-preview-scroll .table thead th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.card-preview-row:hover {
+  background: var(--surface-1);
+}
+
+.card-preview-thumb,
+.card-chip-thumb,
+.inline-card-thumb,
+.table-card-thumb,
+.insight-poster,
+.card-detail-media img,
+.card-detail-placeholder {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  box-shadow: none;
+}
+
+.card-chip-thumb {
+  border-radius: 4px;
+}
+
+.inline-card-thumb,
+.insight-poster,
+.insight-poster-placeholder {
+  border-radius: 8px;
+}
+
+.card-detail-section-label {
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.card-insight {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.card-insight.open {
+  border-left-color: var(--border);
+  padding: 10px;
+}
+
+.insight-header {
+  background: linear-gradient(180deg, var(--surface-2) 82%, rgba(0, 0, 0, 0));
+}
+
+.tip,
+.mana-badge {
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+/* Final pass: near-monochrome headers and a tighter type scale. */
+.wordmark {
+  font-size: 20px;
+}
+
+.panel-title-row h3,
+.resource-empty-state h2,
+.insight-title,
+.card-detail-title {
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.sidebar-section-label,
+.mini-label,
+.card-detail-section-label,
+.table thead th {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar-section-label {
+  color: var(--ink);
+  opacity: 0.7;
+}
+
+.sidebar-status-row .status-chip,
+.decklist-status-row .status-chip {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.sidebar-status-row,
+.decklist-status-row {
+  gap: 0;
+}
+
+.sidebar-status-row .status-chip + .status-chip::before,
+.decklist-status-row .status-chip + .status-chip::before {
+  content: "·";
+  color: var(--border-strong);
+  margin-right: 8px;
+}
+
+.sidebar-status-row .status-chip[data-tone="danger"],
+.decklist-status-row .status-chip[data-tone="danger"] {
+  color: var(--danger);
+}
+
+.mini-card[data-tone="accent"],
+.mini-card[data-tone="success"],
+.mini-card[data-tone="warning"],
+.mini-card[data-tone="danger"] {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.mini-card[data-tone="accent"] .mini-value,
+.mini-card[data-tone="accent"] .mini-label,
+.mini-card[data-tone="success"] .mini-value,
+.mini-card[data-tone="success"] .mini-label,
+.mini-card[data-tone="warning"] .mini-value,
+.mini-card[data-tone="warning"] .mini-label,
+.mini-card[data-tone="danger"] .mini-value,
+.mini-card[data-tone="danger"] .mini-label {
+  color: inherit;
+}
+
+.tone-good,
+.tone-warn {
+  color: var(--ink);
+}
+
+.tone-bad {
+  color: var(--danger);
+}

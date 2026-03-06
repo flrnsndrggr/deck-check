@@ -6,6 +6,7 @@ from typing import Dict, List, Set
 
 from app.core.config import settings
 from app.schemas.deck import CardEntry
+from app.services.commander_utils import combined_color_identity, commander_names_from_cards, legal_commander_pairing
 from app.services.parser import singleton_violations
 
 BASIC_LANDS = {
@@ -248,26 +249,38 @@ def validate_deck(cards: List[CardEntry], commander: str | None, card_map: Dict[
     if main_total != 100:
         errors.append(f"Deck must contain exactly 100 cards including commander; found {main_total}.")
 
-    if commander is None:
+    commander_names = commander_names_from_cards(cards, fallback_commander=commander)
+    if not commander_names:
         errors.append("Commander is required.")
         return errors, warnings, {}
 
     commander_entries = [c for c in cards if c.section == "commander"]
     if not commander_entries:
         errors.append("Commander section is missing.")
-    if len(commander_entries) > 1:
-        warnings.append("Multiple commander entries detected; current validator treats the first commander as primary.")
+    if len(commander_names) > 2:
+        errors.append("Commander section can include at most two commanders.")
     if any(c.qty != 1 for c in commander_entries):
         errors.append("Commander quantity must be exactly 1.")
-
-    commander_card = card_map.get(commander)
-    if not commander_card:
-        errors.append(f"Commander not found on Scryfall: {commander}")
+    if len(commander_names) == 0:
+        errors.append("Commander is required.")
         return errors, warnings, {}
-    if not _is_legal_commander(commander_card):
-        errors.append(f"Commander is not legal/valid as commander: {commander}")
 
-    ci = set(commander_card.get("color_identity") or [])
+    commander_cards = {name: card_map.get(name) for name in commander_names}
+    missing = [name for name, payload in commander_cards.items() if not payload]
+    if missing:
+        errors.extend([f"Commander not found on Scryfall: {name}" for name in missing])
+        return errors, warnings, {}
+
+    if len(commander_names) == 1:
+        commander_card = commander_cards[commander_names[0]]
+        if not _is_legal_commander(commander_card):
+            errors.append(f"Commander is not legal/valid as commander: {commander_names[0]}")
+    elif len(commander_names) == 2:
+        legal_pair, reason = legal_commander_pairing(commander_cards, commander_names, _is_legal_commander)
+        if not legal_pair and reason:
+            errors.append(reason)
+
+    ci = set(combined_color_identity(card_map, commander_names))
     for entry in cards:
         if entry.section not in {"deck", "commander"}:
             continue

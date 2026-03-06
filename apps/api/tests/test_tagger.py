@@ -1,5 +1,5 @@
 from app.schemas.deck import CardEntry
-from app.services.tagger import compute_archetype_weights, tag_cards
+from app.services.tagger import compute_archetype_weights, compute_type_theme_profile, tag_cards
 
 
 def test_tagging_snapshot_staples():
@@ -60,3 +60,40 @@ def test_archetype_weighting_handles_phrase_signals():
     w = compute_archetype_weights(cards, card_map, commander=None)
     assert w["spellslinger"] > 0
     assert w["combo"] > 0
+
+
+def test_type_theme_profile_tracks_creature_subtypes_and_packages():
+    cards = [
+        CardEntry(qty=1, name="Bird A", section="deck"),
+        CardEntry(qty=1, name="Bird B", section="deck"),
+        CardEntry(qty=1, name="Bird C", section="deck"),
+        CardEntry(qty=1, name="Bird D", section="deck"),
+        CardEntry(qty=1, name="Bird E", section="deck"),
+        CardEntry(qty=1, name="Bird F", section="deck"),
+        CardEntry(qty=1, name="Sword", section="deck"),
+        CardEntry(qty=1, name="Shield", section="deck"),
+        CardEntry(qty=1, name="Aura A", section="deck"),
+        CardEntry(qty=1, name="Aura B", section="deck"),
+    ]
+    card_map = {
+        "Bird A": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Bird B": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Bird C": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Bird D": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Bird E": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Bird F": {"type_line": "Creature — Bird", "oracle_text": ""},
+        "Sword": {"type_line": "Artifact — Equipment", "oracle_text": ""},
+        "Shield": {"type_line": "Artifact — Equipment", "oracle_text": ""},
+        "Aura A": {"type_line": "Enchantment — Aura", "oracle_text": ""},
+        "Aura B": {"type_line": "Enchantment — Aura", "oracle_text": ""},
+    }
+    profile = compute_type_theme_profile(cards, card_map)
+    assert profile["dominant_creature_subtype"]["name"] == "Bird"
+    assert any("Bird is the main creature subtype package" in line for line in profile["package_signals"])
+
+
+def test_archetype_weighting_uses_subtype_signal_for_typal_decks():
+    cards = [CardEntry(qty=1, name=f"Bird {i}", section="deck") for i in range(1, 7)]
+    card_map = {f"Bird {i}": {"type_line": "Creature — Bird", "oracle_text": ""} for i in range(1, 7)}
+    w = compute_archetype_weights(cards, card_map, commanders=None)
+    assert w["tribal"] > 0
