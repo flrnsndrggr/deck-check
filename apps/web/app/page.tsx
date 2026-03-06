@@ -1066,7 +1066,10 @@ export default function HomePage() {
     links?: Array<{ label: string; href?: string | null }>;
     compact?: boolean;
   }) {
-    const activeSections = (sections || []).filter((section): section is { label: string; content: any } => Boolean(section?.content));
+    const activeSections = (sections || []).filter(
+      (section): section is { label: string; content: any } =>
+        Boolean(section) && typeof section === "object" && "content" in section && Boolean(section.content),
+    );
     const activeLinks = (links || []).filter((link) => link?.href);
     const mediaNames = (mediaCards || []).filter((name) => typeof name === "string" && name.trim().length > 0);
     const media = mediaNames.length > 1 ? (
