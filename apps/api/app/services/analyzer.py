@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -118,6 +119,60 @@ MANA_LABELS = {
     "R": "Red",
     "G": "Green",
     "C": "Colorless",
+}
+
+DECK_NAME_THEME_HOOKS = {
+    "#Artifacts": ["Overclock", "Clockwork", "Chrome Sermon"],
+    "#Enchantments": ["Rites", "Sigil", "Halo Work"],
+    "#Tokens": ["Procession", "Pageant", "Parade"],
+    "#Sacrifice": ["Bone Market", "Last Call", "Blood Ledger"],
+    "#Spellslinger": ["Spellchain", "Fireworks", "Stack Dance"],
+    "#Voltron": ["Warpath", "Lone Blade", "Single Combat"],
+    "#Reanimator": ["Graveflow", "Afterparty", "Bone Tide"],
+    "#Storm": ["Stormglass", "Ritual Storm", "Spark Weather"],
+    "#LandsMatter": ["Faultline", "Groundwork", "Wilds Engine"],
+    "#Counters": ["Escalation", "Tall Order", "Counterweight"],
+    "#Blink": ["Ghoststep", "Flicker Hall", "Mirror Step"],
+    "#Aristocrats": ["Last Supper", "Blood Ledger", "Bone Tax"],
+    "#Control": ["Lockbox", "Icehouse", "Tax Season"],
+    "#ComboControl": ["Soft Lock", "Endgame", "Icebox"],
+}
+
+DECK_NAME_THEME_LABELS = {
+    "#Artifacts": "Artifacts",
+    "#Enchantments": "Enchantments",
+    "#Tokens": "Tokens",
+    "#Sacrifice": "Sacrifice",
+    "#Spellslinger": "Spells",
+    "#Voltron": "Voltron",
+    "#Reanimator": "Reanimator",
+    "#Storm": "Storm",
+    "#LandsMatter": "Lands",
+    "#Counters": "Counters",
+    "#Blink": "Blink",
+    "#Aristocrats": "Aristocrats",
+    "#Control": "Control",
+    "#ComboControl": "Combo-Control",
+}
+
+DECK_NAME_PLAN_HOOKS = {
+    "Combo Assembly": ["Assembly", "Breakfast", "Loopwork"],
+    "Value Midrange": ["Long Game", "Grindhouse", "Value Engine"],
+    "Control into Inevitable Finish": ["Lockbox", "Endgame", "Tax Season"],
+    "Voltron Pressure": ["Warpath", "Lone Blade", "Single Combat"],
+    "Poison Tempo": ["Toxicology", "Venom Clock", "Plague Run"],
+    "Life-Drain Attrition": ["Blood Ledger", "Bleedout", "Last Call"],
+    "Mill Pressure": ["Deep End", "Memory Leak", "Empty Shelves"],
+}
+
+DECK_NAME_PLAN_LABELS = {
+    "Combo Assembly": "Combo",
+    "Value Midrange": "Midrange",
+    "Control into Inevitable Finish": "Control",
+    "Voltron Pressure": "Voltron",
+    "Poison Tempo": "Poison",
+    "Life-Drain Attrition": "Drain",
+    "Mill Pressure": "Mill",
 }
 _MANA_SYMBOL_RE = re.compile(r"\{([^}]+)\}")
 _ADD_SEGMENT_RE = re.compile(r"add ([^.]+)", re.IGNORECASE)
@@ -1470,6 +1525,98 @@ def _fallback_deck_names(cards: List[CardEntry], n: int = 3) -> List[str]:
     return out
 
 
+def _stable_pick(options: List[str], seed: str) -> str:
+    if not options:
+        return ""
+    idx = int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) % len(options)
+    return options[idx]
+
+
+def _deck_name_anchor(name: str | None) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "Deck"
+    if "," in raw:
+        head = raw.split(",", 1)[0].strip()
+        head_tokens = [t for t in re.split(r"\s+", head) if t]
+        return head_tokens[0] if head_tokens else head
+    tokens = [re.sub(r"[^A-Za-z0-9'-]", "", t) for t in re.split(r"\s+", raw) if t]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return "Deck"
+    if tokens[0].lower() == "the" and len(tokens) >= 2:
+        return tokens[-1]
+    if len(tokens) >= 3 and tokens[1].lower() == "the":
+        return tokens[0]
+    return tokens[0]
+
+
+def _dominant_deck_name_theme(cards: List[CardEntry], primary_plan: str) -> str | None:
+    counts: Counter = Counter()
+    for c in cards:
+        if c.section not in {"deck", "commander"}:
+            continue
+        for tag in set(c.tags or []):
+            if tag in DECK_NAME_THEME_HOOKS:
+                counts[tag] += c.qty
+    if primary_plan == "Combo Assembly":
+        counts["#ComboControl"] += 1
+    if primary_plan == "Control into Inevitable Finish":
+        counts["#Control"] += 1
+    if primary_plan == "Voltron Pressure":
+        counts["#Voltron"] += 1
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _generate_deck_name(
+    cards: List[CardEntry],
+    commander: str | None,
+    intent: Dict,
+    combo_intel: Dict | None,
+    bracket: int,
+    importance: List[Dict] | None = None,
+) -> str:
+    primary_plan = str(intent.get("primary_plan") or "Value Midrange")
+    dominant_theme = _dominant_deck_name_theme(cards, primary_plan)
+    anchor_source = commander
+    if not anchor_source:
+        preferred_cards = [x.get("card") for x in (importance or []) if x.get("card")]
+        anchor_source = preferred_cards[0] if preferred_cards else (_fallback_deck_names(cards, n=1) or ["Deck"])[0]
+    anchor = _deck_name_anchor(anchor_source)
+    seed = "|".join(
+        [
+            anchor_source or "",
+            primary_plan,
+            dominant_theme or "",
+            ",".join(intent.get("kill_vectors", []) or []),
+            str(bracket),
+            str(len((combo_intel or {}).get("matched_variants", []) or [])),
+        ]
+    )
+
+    if bracket >= 4:
+        label = DECK_NAME_THEME_LABELS.get(dominant_theme or "", "") or DECK_NAME_PLAN_LABELS.get(primary_plan, "Value")
+        name = f"{anchor} {label}".strip()
+        return re.sub(r"\s+", " ", name)
+
+    hook_options = DECK_NAME_THEME_HOOKS.get(dominant_theme or "", []) or DECK_NAME_PLAN_HOOKS.get(primary_plan, [])
+    if primary_plan == "Combo Assembly" and (combo_intel or {}).get("matched_variants"):
+        hook_options = hook_options + ["Breakfast", "Assembly Line"]
+    if not hook_options:
+        hook_options = ["Engine Room", "Long Game", "Endgame"]
+    hook = _stable_pick(hook_options, seed)
+    pattern = int(hashlib.sha256(f"{seed}:pattern".encode()).hexdigest()[:8], 16) % 3
+    if pattern == 0:
+        name = f"{anchor} {hook}"
+    elif pattern == 1 and not anchor.endswith("s"):
+        name = f"{anchor}'s {hook}"
+    else:
+        name = f"{hook} {anchor}"
+    return re.sub(r"\s+", " ", name).strip()
+
+
 def _graph_deck_blurbs(
     cards: List[CardEntry],
     sim_summary: Dict,
@@ -1715,8 +1862,17 @@ def analyze(
     role_targets = role_model.get("role_targets", {})
     all_roles = sorted(set(list(role_targets.keys()) + list((rb.get("roles") or {}).keys())))
     role_cards_map = _role_cards_map(cards, all_roles)
+    deck_name = _generate_deck_name(
+        cards=cards,
+        commander=commander,
+        intent=intent,
+        combo_intel=combo_intel,
+        bracket=bracket,
+        importance=top,
+    )
 
     return {
+        "deck_name": deck_name,
         "role_breakdown": rb,
         "role_targets": role_targets,
         "role_target_model": {

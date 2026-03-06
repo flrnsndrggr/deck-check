@@ -19,6 +19,7 @@ from app.workers.queue import redis_conn
 
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 AI_RATE_LIMIT_PER_MINUTE = 24
+AI_PROVIDER_COOLDOWN_S = 900
 DEFAULT_INPUT_COST_PER_1M = 1.0
 DEFAULT_OUTPUT_COST_PER_1M = 4.0
 MODEL_PRICING_PER_1M = {
@@ -81,6 +82,12 @@ class GuidePayload(BaseModel):
     play_overview: EnrichedText = Field(default_factory=EnrichedText)
 
 
+class DeckNamePayload(BaseModel):
+    deck_name: str = ""
+    citations: List[str] = Field(default_factory=list)
+    mentioned_cards: List[str] = Field(default_factory=list)
+
+
 class AuditIssue(BaseModel):
     section: str
     reason: str
@@ -124,6 +131,7 @@ class AIEnrichmentService:
         intent = self._run_intent_enrichment(evidence, analysis)
         graphs = self._run_graph_enrichment(evidence, analysis)
         enriched_watchouts = self._run_watchout_enrichment(evidence, watchouts)
+        deck_name = self._run_deck_name_enrichment(evidence, analysis)
 
         if intent:
             analysis.setdefault("intent_summary", {}).update(intent)
@@ -132,6 +140,8 @@ class AIEnrichmentService:
             analysis.setdefault("graph_deck_blurbs", {}).update(graphs.get("graph_deck_blurbs", {}))
         if enriched_watchouts is not None:
             analysis["rules_watchouts"] = enriched_watchouts
+        if deck_name:
+            analysis["deck_name"] = deck_name
         return analysis
 
     def enrich_guides(
@@ -753,8 +763,72 @@ class AIEnrichmentService:
         )
         return accepted or None
 
+    def _run_deck_name_enrichment(self, evidence: Dict[str, Any], analysis: Dict[str, Any]) -> str | None:
+        prompt = {
+            "existing_deck_name": analysis.get("deck_name", ""),
+            "intent_summary": analysis.get("intent_summary", {}),
+            "combo_intel": analysis.get("combo_intel", {}),
+            "health_summary": analysis.get("health_summary", {}),
+            "allowed_card_names": evidence.get("allowed_card_names", []),
+            "evidence_index": self._prompt_evidence_subset(evidence, prefixes=["intent:", "card:", "combo:", "recommendation:", "sim:"]),
+        }
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "deck_name": {"type": "string"},
+                "citations": {"type": "array", "items": {"type": "string"}},
+                "mentioned_cards": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["deck_name", "citations", "mentioned_cards"],
+        }
+        result = self._call_model_json("deck_name", prompt, schema)
+        if not result:
+            return None
+        parsed = DeckNamePayload.model_validate(result["parsed"]).model_dump()
+        ok, issues = self._validate_deck_name(
+            deck_name=parsed.get("deck_name", ""),
+            citations=parsed.get("citations", []),
+            mentioned_cards=parsed.get("mentioned_cards", []),
+            evidence=evidence,
+            fallback_name=str(analysis.get("deck_name", "") or ""),
+        )
+        self._record_audit(
+            family="deck_name",
+            payload_hash=result["payload_hash"],
+            status="accepted" if ok else "rejected",
+            reason="" if ok else "validation_failed",
+            request_json=result["request_json"],
+            response_json=result["response_json"],
+            validation_issues={"issues": issues},
+            input_tokens=result["usage"].get("prompt_tokens", 0),
+            output_tokens=result["usage"].get("completion_tokens", 0),
+            estimated_cost_usd=result["estimated_cost_usd"],
+        )
+        return parsed["deck_name"].strip() if ok else None
+
     def _call_model_json(self, family: str, prompt_payload: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any] | None:
         if not self.enabled():
+            return None
+        provider_block = self._provider_cooldown_reason()
+        if provider_block:
+            payload_hash = self._stable_hash(
+                {
+                    "family": family,
+                    "model": settings.openai_model,
+                    "prompt_payload": prompt_payload,
+                    "schema": schema,
+                }
+            )
+            self._record_audit(
+                family=family,
+                payload_hash=payload_hash,
+                status="provider_cooldown",
+                reason=provider_block,
+                request_json={"family": family, "prompt_payload": prompt_payload, "schema": schema},
+                response_json={},
+                validation_issues={},
+            )
             return None
         request_json = {
             "family": family,
@@ -863,11 +937,14 @@ class AIEnrichmentService:
             self._add_cost_to_budget(estimated_cost)
             return result
         except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            if self._should_trip_provider_cooldown(exc):
+                self._set_provider_cooldown(reason)
             self._record_audit(
                 family=family,
                 payload_hash=payload_hash,
                 status="error",
-                reason=f"{type(exc).__name__}: {exc}",
+                reason=reason,
                 request_json=request_json,
                 response_json={},
                 validation_issues={},
@@ -953,6 +1030,44 @@ class AIEnrichmentService:
                 issues.append({"section": section_key, "reason": "too close to oracle text"})
                 break
 
+        return not issues, issues
+
+    def _validate_deck_name(
+        self,
+        *,
+        deck_name: str,
+        citations: Sequence[str],
+        mentioned_cards: Sequence[str],
+        evidence: Dict[str, Any],
+        fallback_name: str,
+    ) -> tuple[bool, List[Dict[str, str]]]:
+        issues: List[Dict[str, str]] = []
+        name = str(deck_name or "").strip()
+        if not name:
+            return False, [{"section": "deck_name", "reason": "empty deck name"}]
+        words = [w for w in re.split(r"\s+", name) if w]
+        if len(words) > 6:
+            issues.append({"section": "deck_name", "reason": "too many words"})
+        if len(name) > 48:
+            issues.append({"section": "deck_name", "reason": "name too long"})
+        allowed_ids = set((evidence.get("evidence_index") or {}).keys())
+        bad_citations = [c for c in citations if c not in allowed_ids]
+        if bad_citations:
+            issues.append({"section": "deck_name", "reason": f"unknown citations: {', '.join(sorted(set(bad_citations)))}"})
+        if not citations:
+            issues.append({"section": "deck_name", "reason": "missing citations"})
+        allowed_cards = {str(name) for name in evidence.get("allowed_card_names", [])}
+        bad_cards = [name for name in mentioned_cards if name not in allowed_cards]
+        if bad_cards:
+            issues.append({"section": "deck_name", "reason": f"unknown mentioned cards: {', '.join(sorted(set(bad_cards)))}"})
+        unsupported_numbers = NUMBER_RE.findall(name)
+        if unsupported_numbers:
+            issues.append({"section": "deck_name", "reason": "deck name should not contain numeric metrics"})
+        fallback_tokens = {w.lower() for w in re.split(r"\s+", fallback_name) if w}
+        if mentioned_cards:
+            pass
+        elif fallback_tokens and not any(token.lower() in fallback_tokens for token in words):
+            issues.append({"section": "deck_name", "reason": "missing recognizable anchor from fallback name"})
         return not issues, issues
 
     def _inject_guide_overview(self, markdown: str, heading: str, body: str) -> str:
@@ -1094,6 +1209,7 @@ class AIEnrichmentService:
             "graph_blurb": "Explain graphs in plain English and tie advice to named cards only when supported by evidence.",
             "rules_watchout": "Explain tricky interactions, rulings, and sequencing. Do not repeat the card's oracle text.",
             "primer": "Write short primer overviews grounded in verified deck identity, metrics, and recommendations.",
+            "deck_name": "Generate one hybrid MTG-style deck name for a Commander list. It must keep one literal anchor and one flavorful hook.",
             "consistency_audit": "Act as an internal checker and flag contradictions against the supplied evidence.",
         }
         return f"{base} {family_tail.get(family, '')}".strip()
@@ -1115,6 +1231,11 @@ class AIEnrichmentService:
             "primer": (
                 "Produce one short optimization overview and one short play overview. "
                 "Do not invent new recommendations or matchup claims beyond the evidence bundle."
+            ),
+            "deck_name": (
+                "Return a single deck name only. Because Deck.Check has only one visible name field, use a hybrid name that keeps one retrievable anchor and one expressive hook. "
+                "Favor Commander naming conventions: casual lists can be evocative, high-power lists should stay tighter. "
+                "Do not use more than 6 words, do not use a colon, do not include raw metrics, and keep one literal anchor from the commander, engine, or core plan."
             ),
             "consistency_audit": "Return fail with issues if any section adds unsupported facts or contradicts the evidence.",
         }
@@ -1158,6 +1279,37 @@ class AIEnrichmentService:
             redis_conn.expire(key, 172800)
         except Exception:
             return
+
+    def _provider_cooldown_reason(self) -> str:
+        try:
+            raw = redis_conn.get("aienrich:provider:cooldown")
+            if not raw:
+                return ""
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8", errors="ignore")
+            return str(raw)
+        except Exception:
+            return ""
+
+    def _set_provider_cooldown(self, reason: str) -> None:
+        try:
+            redis_conn.setex("aienrich:provider:cooldown", AI_PROVIDER_COOLDOWN_S, reason[:300])
+        except Exception:
+            return
+
+    def _should_trip_provider_cooldown(self, exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            text = ""
+            try:
+                text = exc.response.text.lower()
+            except Exception:
+                text = ""
+            if status in {429, 500, 502, 503, 504}:
+                return True
+            if "insufficient_quota" in text or "rate limit" in text or "quota" in text:
+                return True
+        return False
 
     def _cache_key(self, family: str, payload_hash: str) -> str:
         return f"aienrich:{family}:{settings.openai_model}:{payload_hash}"

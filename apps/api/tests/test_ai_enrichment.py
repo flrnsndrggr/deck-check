@@ -73,6 +73,40 @@ def test_ai_enrichment_disabled_is_noop(monkeypatch):
     assert out["graph_explanations"]["mana_percentiles"] == "base"
 
 
+def test_provider_cooldown_skips_repeated_upstream_failures(monkeypatch):
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(ai_mod, "redis_conn", fake_redis)
+    monkeypatch.setattr(ai_mod.settings, "ai_enabled", True)
+    monkeypatch.setattr(ai_mod.settings, "openai_api_key", "test-key")
+
+    svc = AIEnrichmentService(None)
+    calls = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        calls["count"] += 1
+        req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        resp = httpx.Response(429, request=req, text='{"error":{"code":"insufficient_quota"}}')
+        raise httpx.HTTPStatusError("quota", request=req, response=resp)
+
+    import httpx
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+
+    prompt = {"x": 1}
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    first = svc._call_model_json("intent_summary", prompt, schema)
+    second = svc._call_model_json("intent_summary", prompt, schema)
+    assert first is None
+    assert second is None
+    assert calls["count"] == 1
+    assert fake_redis.get("aienrich:provider:cooldown")
+
+
 def test_invalid_generated_card_name_is_rejected(monkeypatch):
     monkeypatch.setattr(ai_mod, "redis_conn", _FakeRedis())
     monkeypatch.setattr(ai_mod.settings, "ai_enabled", True)
@@ -106,6 +140,46 @@ def test_invalid_generated_card_name_is_rejected(monkeypatch):
         card_map={"Soraya the Falconer": {"oracle_text": "Flying"}},
     )
     assert "plan_narrative" not in out["intent_summary"]
+
+
+def test_valid_hidden_ai_deck_name_overrides_fallback(monkeypatch):
+    monkeypatch.setattr(ai_mod, "redis_conn", _FakeRedis())
+    monkeypatch.setattr(ai_mod.settings, "ai_enabled", True)
+    monkeypatch.setattr(ai_mod.settings, "openai_api_key", "test-key")
+
+    svc = AIEnrichmentService(None)
+    monkeypatch.setattr(svc, "_call_model_json", lambda family, prompt, schema: {
+        "parsed": {
+            "deck_name": "Dynamo Overclock",
+            "citations": ["intent:primary_plan", "card:The Peregrine Dynamo"],
+            "mentioned_cards": ["The Peregrine Dynamo"],
+        },
+        "usage": {},
+        "request_json": {"family": family, "prompt_payload": prompt},
+        "response_json": {"parsed": {}},
+        "payload_hash": "deck-name-x",
+        "estimated_cost_usd": 0.0,
+    })
+    analysis = {
+        "deck_name": "Dynamo Engine",
+        "intent_summary": {"primary_plan": "Combo Assembly"},
+        "graph_explanations": {},
+        "graph_deck_blurbs": {},
+        "combo_intel": {"matched_variants": [], "near_miss_variants": []},
+        "adds": [],
+        "cuts": [],
+        "swaps": [],
+        "health_summary": {},
+    }
+    out = svc.enrich_analysis(
+        cards=[{"qty": 1, "name": "The Peregrine Dynamo", "section": "commander"}],
+        commander="The Peregrine Dynamo",
+        analysis=analysis,
+        sim_summary={"milestones": {}},
+        watchouts=[],
+        card_map={"The Peregrine Dynamo": {"oracle_id": "oid-dynamo", "oracle_text": "", "type_line": "Legendary Artifact Creature"}},
+    )
+    assert out["deck_name"] == "Dynamo Overclock"
 
 
 def test_rules_watchout_enrichment_hides_empty_cards(monkeypatch):

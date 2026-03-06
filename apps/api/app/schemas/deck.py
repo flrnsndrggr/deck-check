@@ -119,6 +119,7 @@ class ComboIntel(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    deck_name: str = ""
     role_breakdown: Dict
     role_targets: Dict = Field(default_factory=dict)
     role_target_model: Dict = Field(default_factory=dict)
