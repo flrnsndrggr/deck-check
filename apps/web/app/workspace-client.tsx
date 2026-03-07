@@ -1584,33 +1584,44 @@ export default function HomePage() {
   }
 
   function renderComboGrid(
-    names: string[],
+    entries: Array<string | { name: string; label?: string }>,
     keyPrefix: string,
     options?: { dimmedNames?: string[]; emptyText?: string },
   ) {
-    const items = (names || []).filter((name) => typeof name === "string" && name.trim().length > 0);
+    const items = (entries || [])
+      .map((entry) => {
+        if (typeof entry === "string") {
+          const name = entry.trim();
+          return name ? { name, label: name } : null;
+        }
+        const name = String(entry?.name || "").trim();
+        if (!name) return null;
+        const label = String(entry?.label || name).trim() || name;
+        return { name, label };
+      })
+      .filter((entry): entry is { name: string; label: string } => Boolean(entry));
     if (!items.length) {
       return <p className="muted">{options?.emptyText || "No cards available."}</p>;
     }
     const dimmed = new Set((options?.dimmedNames || []).map((name) => name.trim().toLowerCase()));
     return (
       <div className="combo-card-grid">
-        {items.map((name, index) => {
-          const poster = cardPoster(name);
-          const isDimmed = dimmed.has(name.trim().toLowerCase());
+        {items.map((item, index) => {
+          const poster = cardPoster(item.name);
+          const isDimmed = dimmed.has(item.name.trim().toLowerCase());
           return (
             <button
               key={`${keyPrefix}-${index}`}
               type="button"
               className={`combo-card-tile ${isDimmed ? "is-dimmed" : ""}`}
-              onClick={() => setSelectedCard(name)}
+              onClick={() => setSelectedCard(item.name)}
             >
               {poster ? (
-                <img src={poster} alt={name} loading="lazy" className="combo-card-tile-image" />
+                <img src={poster} alt={item.name} loading="lazy" className="combo-card-tile-image" />
               ) : (
                 <div className="combo-card-tile-image combo-card-tile-placeholder" />
               )}
-              <span className="combo-card-tile-name">{name}</span>
+              <span className="combo-card-tile-name">{item.label}</span>
             </button>
           );
         })}
@@ -3701,13 +3712,14 @@ export default function HomePage() {
                             {(row.cards || []).length === 0 ? (
                               <span className="muted">No cards mapped for this role in current tagged list.</span>
                             ) : (
-                              <div className="card-chip-row">
-                                {(row.cards || []).map((x: any, idx: number) =>
-                                  renderCardChip(x.name, `${row.role}-${x.name}-${idx}`, {
-                                    label: `${x.qty}x ${x.name}`,
-                                  }),
-                                )}
-                              </div>
+                              renderComboGrid(
+                                (row.cards || []).map((x: any) => ({
+                                  name: x.name,
+                                  label: `${x.qty}x ${x.name}`,
+                                })),
+                                `role-${row.role}`,
+                                { emptyText: "No cards mapped for this role in current tagged list." },
+                              )
                             )}
                           </td>
                         </tr>

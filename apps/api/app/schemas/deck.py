@@ -102,11 +102,14 @@ class StrictlyBetterRequest(BaseModel):
     commander: Optional[str] = None
     commanders: List[str] = Field(default_factory=list)
     budget_max_usd: Optional[float] = Field(default=None, ge=0)
+    explain: bool = False
 
 
 class StrictlyBetterOption(BaseModel):
     card: str
     reasons: List[str] = Field(default_factory=list)
+    better_axes: List[str] = Field(default_factory=list)
+    proof_summary: str = ""
     price_usd: Optional[float] = None
     role_overlap: List[str] = Field(default_factory=list)
     mana_value: Optional[float] = None
@@ -115,9 +118,27 @@ class StrictlyBetterOption(BaseModel):
     cardmarket_url: str = ""
 
 
+class StrictlyBetterSelectedProfile(BaseModel):
+    main_types: List[str] = Field(default_factory=list)
+    replacement_family: str = ""
+    comparison_class: Optional[str] = None
+    theme_obligations: List[Dict] = Field(default_factory=list)
+    strict_comparable: bool = False
+    unsupported_reasons: List[str] = Field(default_factory=list)
+
+
+class StrictlyBetterRejectedCandidate(BaseModel):
+    name: str
+    reasons: List[str] = Field(default_factory=list)
+
+
 class StrictlyBetterResponse(BaseModel):
+    schema_version: int = 1
     selected_card: str
     options: List[StrictlyBetterOption] = Field(default_factory=list)
+    no_result_reasons: List[str] = Field(default_factory=list)
+    selected_profile: Optional[StrictlyBetterSelectedProfile] = None
+    rejected_candidates: List[StrictlyBetterRejectedCandidate] = Field(default_factory=list)
 
 
 class ComboVariant(BaseModel):
