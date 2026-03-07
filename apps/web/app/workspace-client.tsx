@@ -19,36 +19,12 @@ import {
 import ReactMarkdown from "react-markdown";
 import { chartTheme, resolveTheme, type ResolvedTheme } from "./theme";
 import { ManaText } from "./mana-symbols";
+import { apiUrl } from "./api-url";
+import { ConsentPreferencesPanel } from "./consent-manager";
 
-const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const DEFAULT_API_BASE = "https://deck-check.onrender.com";
 const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
 const LOCAL_DRAFT_STORAGE_KEY = "deckcheck.local-draft.v1";
 const BANNER_FALLBACK_STORAGE_KEY = "deckcheck.banner-fallback.v1";
-
-function sanitizeApiBase(raw: string): string {
-  const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
-  const match = trimmed.match(/https?:\/\/[^\s'"]+/i);
-  return (match ? match[0] : trimmed).replace(/\/+$/g, "");
-}
-
-const API_BASE = sanitizeApiBase(RAW_API_BASE);
-
-function apiUrl(path: string): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  const base =
-    API_BASE ||
-    (typeof window !== "undefined" && window.location.hostname.endsWith("netlify.app")
-      ? DEFAULT_API_BASE
-      : "");
-  if (!base) {
-    return normalized;
-  }
-  if (!/^https?:\/\/[^\s]+$/i.test(base)) {
-    throw new Error(`Invalid NEXT_PUBLIC_API_BASE value "${RAW_API_BASE}".`);
-  }
-  return `${base}${normalized}`;
-}
 type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 type BannerArt = {
   mode: "none" | "fallback" | "single" | "split";
@@ -56,6 +32,8 @@ type BannerArt = {
   right?: string;
   names: string[];
 };
+type WorkspaceOverlay = "decks" | "settings";
+type AuthMode = "login" | "register" | "recover";
 
 const TABS = [
   "Deck Analysis",
@@ -555,8 +533,9 @@ export default function HomePage() {
   const [resetPassword, setResetPassword] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
   const [integrationsMeta, setIntegrationsMeta] = useState<any>(null);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [accountTab, setAccountTab] = useState<"login" | "register" | "recover" | "library" | "security">("login");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [activeOverlay, setActiveOverlay] = useState<WorkspaceOverlay | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [strictlyBetter, setStrictlyBetter] = useState<any[]>([]);
   const [strictlyBetterLoading, setStrictlyBetterLoading] = useState(false);
   const [expandedRoles, setExpandedRoles] = useState<Record<string, boolean>>({});
@@ -570,6 +549,8 @@ export default function HomePage() {
   const mainBannerTitleRef = useRef<HTMLDivElement | null>(null);
   const insightBannerTitleRef = useRef<HTMLDivElement | null>(null);
   const mobileBannerTitleRef = useRef<HTMLDivElement | null>(null);
+  const accountLauncherRef = useRef<HTMLButtonElement | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const activeRunRef = useRef(0);
   const draftRestoredRef = useRef(false);
 
@@ -1404,8 +1385,9 @@ export default function HomePage() {
     }
   }
 
-  async function requestPasswordReset() {
-    if (!authEmail.trim()) {
+  async function requestPasswordReset(emailOverride?: string) {
+    const targetEmail = String(emailOverride ?? authEmail).trim();
+    if (!targetEmail) {
       setAuthError("Enter your email first.");
       return;
     }
@@ -1418,10 +1400,11 @@ export default function HomePage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: authEmail }),
+          body: JSON.stringify({ email: targetEmail }),
         },
         "Password reset request",
       );
+      setAuthEmail(targetEmail);
       setAuthNotice(payload?.debug_magic_link ? `${payload.message} Local link: ${payload.debug_magic_link}` : payload.message || "If that email exists, a one-time reset link has been sent.");
     } catch (err: any) {
       setAuthError(normalizeUiError(err, "Password reset request failed."));
@@ -1526,6 +1509,7 @@ export default function HomePage() {
     try {
       const payload = await requestJson(`/api/projects/${projectId}`, { method: "GET" }, "Project load");
       applySavedBundle(payload);
+      setActiveOverlay(null);
       setAuthNotice(`Loaded ${payload.name || payload.deck_name}.`);
     } catch (err: any) {
       setAuthError(normalizeUiError(err, "Loading the saved deck failed."));
@@ -1540,6 +1524,7 @@ export default function HomePage() {
     try {
       const payload = await requestJson(`/api/projects/${projectId}/versions/${versionId}`, { method: "GET" }, "Project version load");
       applySavedBundle(payload);
+      setActiveOverlay(null);
       setAuthNotice(`Loaded version ${payload.version_number}.`);
     } catch (err: any) {
       setAuthError(normalizeUiError(err, "Loading the saved deck version failed."));
@@ -1588,6 +1573,46 @@ export default function HomePage() {
           </div>
         ) : null}
         <div className="workspace-banner-backdrop-gradient" />
+      </div>
+    );
+  }
+
+  function openOverlay(target: WorkspaceOverlay) {
+    setAccountMenuOpen(false);
+    setActiveOverlay(target);
+  }
+
+  function closeOverlay() {
+    setActiveOverlay(null);
+  }
+
+  function renderOverlayBanner({
+    id,
+    title,
+    kicker,
+    subtitle,
+  }: {
+    id: string;
+    title: string;
+    kicker: string;
+    subtitle: string;
+  }) {
+    return (
+      <div className="workspace-overlay-banner">
+        {renderBannerBackdrop("workspace-overlay-banner-backdrop")}
+        <div className="workspace-overlay-banner-copy">
+          <div className="workspace-overlay-banner-kicker">{kicker}</div>
+          <h3 id={id}>{title}</h3>
+          <p>{subtitle}</p>
+        </div>
+        <button
+          type="button"
+          className="account-drawer-close workspace-overlay-close"
+          aria-label={`Close ${title}`}
+          onClick={closeOverlay}
+        >
+          ×
+        </button>
       </div>
     );
   }
@@ -2555,8 +2580,8 @@ export default function HomePage() {
 
   useEffect(() => {
     if (resetToken) {
-      setAccountOpen(true);
-      setAccountTab("recover");
+      setActiveOverlay("decks");
+      setAuthMode("recover");
     }
   }, [resetToken]);
 
@@ -2564,25 +2589,37 @@ export default function HomePage() {
     if (authUser?.email && !authEmail) {
       setAuthEmail(authUser.email);
     }
-    if (authUser) {
-      if (accountTab === "login" || accountTab === "register" || accountTab === "recover") {
-        setAccountTab("library");
-      }
-    } else if (accountTab === "library" || accountTab === "security") {
-      setAccountTab("login");
+    if (!authUser && authMode !== "register" && authMode !== "recover") {
+      setAuthMode("login");
     }
-  }, [authUser, authEmail, accountTab]);
+  }, [authUser, authEmail, authMode]);
 
   useEffect(() => {
-    if (!accountOpen || typeof window === "undefined") return;
+    if ((!accountMenuOpen && !activeOverlay) || typeof window === "undefined") return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setAccountOpen(false);
+        if (accountMenuOpen) {
+          setAccountMenuOpen(false);
+          return;
+        }
+        setActiveOverlay(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [accountOpen]);
+  }, [accountMenuOpen, activeOverlay]);
+
+  useEffect(() => {
+    if (!accountMenuOpen || typeof window === "undefined") return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (accountLauncherRef.current?.contains(target) || accountMenuRef.current?.contains(target)) return;
+      setAccountMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, [accountMenuOpen]);
 
   useEffect(() => {
     if (currentProjectId || projectName.trim()) return;
@@ -2606,25 +2643,24 @@ export default function HomePage() {
   }, []);
 
   const sidebarProgressMeta = analysisProgressMeta.show ? analysisProgressMeta : decklistProgressMeta;
-  const accountInitials = (authUser?.email || "dc")
-    .split("@")[0]
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part: string) => part[0]?.toUpperCase() || "")
-    .join("") || "DC";
-  const accountTriggerLabel = "Account";
-  const accountTriggerMeta = authUser
-    ? (hasUnsavedChanges ? "Unsaved changes" : `${projects.length} saved deck${projects.length === 1 ? "" : "s"}`)
-    : "Sign in to save decks";
+  const accountInitials = (() => {
+    const localPart = String(authUser?.email || "").split("@")[0].trim();
+    if (!localPart) return "DC";
+    const parts = localPart.split(/[\s._-]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return parts
+        .slice(0, 2)
+        .map((part: string) => part[0]?.toUpperCase() || "")
+        .join("");
+    }
+    return localPart.slice(0, 2).toUpperCase() || "DC";
+  })();
+  const activeAuthMode = resetToken ? "recover" : authMode;
+  const isDecksOverlayOpen = activeOverlay === "decks";
+  const isSettingsOverlayOpen = activeOverlay === "settings";
   const selectedArtPreference = ART_PREFERENCE_OPTIONS.find((option) => option.value === artPreference) || ART_PREFERENCE_OPTIONS[2];
-  const activeAccountTab = resetToken
-    ? "recover"
-    : authUser
-      ? (accountTab === "security" ? accountTab : "library")
-      : (accountTab === "register" || accountTab === "recover" ? accountTab : "login");
 
-  function renderAccountLibrary() {
+  function renderDeckLibrary() {
     return (
       <div className="stack">
         <div className="sidebar-status-row">
@@ -2638,11 +2674,10 @@ export default function HomePage() {
               Last saved {new Date(lastSavedAt).toLocaleDateString()}
             </span>
           ) : null}
-          {localDraftSavedAt ? <span className="status-chip" data-tone="accent">Local backup</span> : null}
         </div>
         <div className="account-section-intro">
-          <strong>Your deck library</strong>
-          <span>Save the current deck, keep versions under one deck name, and reopen older snapshots when needed.</span>
+          <strong>Manage saved decks</strong>
+          <span>Save the current list, keep versions under one deck name, and reopen any stored snapshot into the overview.</span>
         </div>
         <label>Saved deck name</label>
         <input
@@ -2655,11 +2690,7 @@ export default function HomePage() {
           <button className="btn btn-primary" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy || !hasMeaningfulDeckState || Boolean(currentProjectId && !hasUnsavedChanges)}>
             {projectBusy ? "Saving..." : currentProjectId ? (hasUnsavedChanges ? "Save new version" : "Already saved") : "Save current deck"}
           </button>
-          <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>
-            Clear local draft
-          </button>
         </div>
-        {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
         <div className="saved-projects-list">
           {(projects || []).map((project: any) => (
             <div key={project.id} className="saved-project-row">
@@ -2716,37 +2747,7 @@ export default function HomePage() {
     );
   }
 
-  function renderAccountSecurity() {
-    return (
-      <div className="stack">
-        <div className="account-section-intro">
-          <strong>Security</strong>
-          <span>Manage recovery and the current session.</span>
-        </div>
-        {renderMiniCard({
-          label: "Signed in as",
-          value: authUser?.email || "Unknown user",
-          surface: "2",
-        })}
-        <div className="account-primary-actions">
-          <button className="btn" onClick={() => { setAuthEmail(authUser?.email || authEmail); void requestPasswordReset(); }} disabled={authBusy}>
-            Email reset link
-          </button>
-          {authUser?.is_admin ? (
-            <a className="btn" href="/admin">
-              Open admin
-            </a>
-          ) : null}
-          <button className="btn" onClick={handleLogout} disabled={authBusy}>
-            Sign out
-          </button>
-        </div>
-        <p className="control-help">Password recovery uses a one-time email magic link. Signing out keeps local draft backups on this device unless you clear them.</p>
-      </div>
-    );
-  }
-
-  function renderSignedOutAccount() {
+  function renderSignedOutDecks() {
     if (resetToken) {
       return (
         <div className="stack">
@@ -2758,7 +2759,7 @@ export default function HomePage() {
           <input className="input" type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="At least 10 characters" />
           <div className="account-primary-actions">
             <button className="btn btn-primary" onClick={confirmPasswordReset} disabled={authBusy}>Set new password</button>
-            <button className="btn" onClick={() => { setResetToken(""); setResetPassword(""); clearResetTokenFromUrl(); setAuthNotice(""); setAccountTab("login"); }}>Back to sign in</button>
+            <button className="btn" onClick={() => { setResetToken(""); setResetPassword(""); clearResetTokenFromUrl(); setAuthNotice(""); setAuthMode("login"); }}>Back to sign in</button>
           </div>
         </div>
       );
@@ -2767,30 +2768,217 @@ export default function HomePage() {
     return (
       <div className="stack">
         <div className="account-section-intro">
-          <strong>{activeAccountTab === "register" ? "Create your account" : activeAccountTab === "recover" ? "Recover access" : "Sign in"}</strong>
-          <span>{activeAccountTab === "recover" ? "Request a one-time reset link by email." : "Accounts save decklists, tagged outputs, analysis snapshots, and version history."}</span>
+          <strong>{activeAuthMode === "register" ? "Create your account" : activeAuthMode === "recover" ? "Recover access" : "Sign in"}</strong>
+          <span>{activeAuthMode === "recover" ? "Request a one-time reset link by email." : "Accounts save decklists, tagged outputs, analysis snapshots, and version history."}</span>
         </div>
         <label>Email</label>
         <input className="input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="you@example.com" />
-        {activeAccountTab !== "recover" ? (
+        {activeAuthMode !== "recover" ? (
           <>
             <label>Password</label>
             <input className="input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="At least 10 characters" />
             <div className="account-primary-actions">
-              <button className="btn btn-primary" onClick={() => handleAuth(activeAccountTab === "register" ? "register" : "login")} disabled={authBusy}>
-                {activeAccountTab === "register" ? "Create account" : "Log in"}
+              <button className="btn btn-primary" onClick={() => handleAuth(activeAuthMode === "register" ? "register" : "login")} disabled={authBusy}>
+                {activeAuthMode === "register" ? "Create account" : "Log in"}
               </button>
             </div>
           </>
         ) : (
           <div className="account-primary-actions">
-            <button className="btn btn-primary" onClick={requestPasswordReset} disabled={authBusy}>Email reset link</button>
+            <button className="btn btn-primary" onClick={() => { void requestPasswordReset(); }} disabled={authBusy}>Email reset link</button>
           </div>
         )}
-        {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
-        <div className="account-primary-actions">
-          <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>Clear local draft</button>
-        </div>
+        {localDraftSavedAt ? <p className="control-help">A local deck backup is saved on this device. Clear it from Settings if you want a clean start.</p> : null}
+      </div>
+    );
+  }
+
+  function renderSettingsPanel() {
+    return (
+      <div className="stack">
+        <section className="workspace-overlay-section stack">
+          <div className="account-section-intro">
+            <strong>Workspace settings</strong>
+            <span>Adjust art style, simulation assumptions, and local device storage.</span>
+          </div>
+
+          <label>Card art style</label>
+          <select className="select" value={artPreference} onChange={(e) => setArtPreference(normalizeArtPreference(e.target.value))}>
+            {ART_PREFERENCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="control-help">{selectedArtPreference.description}</p>
+
+          <label>Inferred bracket</label>
+          {renderMiniCard({
+            label: "Inferred bracket",
+            value: currentBracketReport ? `Bracket ${currentBracketValue}` : "Pending",
+            surface: "2",
+            help: currentBracketName || "Deck.Check will infer bracket from the deck once tagging starts.",
+            children: <div className="control-help">{currentBracketName || "Deck.Check will infer bracket from the deck once tagging starts."}</div>,
+          })}
+          <p className="control-help">Deck.Check infers bracket from fast mana, tutors, combo density, Game Changers, and simulated speed when available.</p>
+
+          <label>Simulation Runs: {simRuns}</label>
+          <p className="control-help">More runs make the results steadier. 2,000 is a good default.</p>
+          <input
+            className="slider"
+            type="range"
+            min={500}
+            max={10000}
+            step={500}
+            value={simRuns}
+            onChange={(e) => setSimRuns(Number(e.target.value))}
+          />
+
+          <label>Budget Cap (USD/card)</label>
+          <p className="control-help">Only affects suggested adds. Leave blank for no budget filter.</p>
+          <input
+            className="input"
+            type="text"
+            inputMode="decimal"
+            value={budgetMaxUsd}
+            onChange={(e) => setBudgetMaxUsd(e.target.value)}
+            placeholder="e.g. 10"
+          />
+
+          <label className="setting-toggle" htmlFor="advanced-settings-toggle">
+            <span>
+              <strong>Advanced settings</strong>
+              <span className="control-help setting-toggle-help">Show tuning controls for sim style and matchup assumptions.</span>
+            </span>
+            <input
+              id="advanced-settings-toggle"
+              type="checkbox"
+              checked={showAdvancedSettings}
+              onChange={(e) => setAdvancedMode(e.target.checked)}
+            />
+          </label>
+
+          {showAdvancedSettings ? (
+            <div className="advanced-settings stack">
+              <label>Simulation Style</label>
+              <select className="select" value={policy} onChange={(e) => setPolicy(e.target.value)}>
+                <option value="auto">Auto</option>
+                <option value="casual">Casual value</option>
+                <option value="optimized">Optimized mid-power</option>
+                <option value="cedh">cEDH-like speed</option>
+                <option value="commander-centric">Commander-centric</option>
+                <option value="hold commander">Hold commander</option>
+              </select>
+              <p className="control-help">
+                Auto is recommended. Effective style right now: <strong>{computeEffectivePolicy()}</strong>.
+              </p>
+
+              <label>Turn Limit: {turnLimit}</label>
+              <p className="control-help">Increase this for slower decks that usually win later than turn 8.</p>
+              <input
+                className="slider"
+                type="range"
+                min={5}
+                max={14}
+                step={1}
+                value={turnLimit}
+                onChange={(e) => setTurnLimit(Number(e.target.value))}
+              />
+
+              <label>Table Pressure: {tablePressure}%</label>
+              <p className="control-help">How often the sim assumes opponents force you to spend interaction.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={tablePressure}
+                onChange={(e) => setTablePressure(Number(e.target.value))}
+              />
+
+              <label>Mulligan Aggression: {mulliganAggression}%</label>
+              <p className="control-help">Higher keeps faster, riskier hands. Lower keeps steadier hands.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={mulliganAggression}
+                onChange={(e) => setMulliganAggression(Number(e.target.value))}
+              />
+
+              <label>Commander Priority: {commanderPriority}%</label>
+              <p className="control-help">Higher casts commander earlier. Lower develops the board first.</p>
+              <input
+                className="slider"
+                type="range"
+                min={0}
+                max={100}
+                step={10}
+                value={commanderPriority}
+                onChange={(e) => setCommanderPriority(Number(e.target.value))}
+              />
+            </div>
+          ) : (
+            <p className="control-help">Advanced mode is off. Deck.Check is using sensible defaults behind the scenes.</p>
+          )}
+
+          <div className="account-primary-actions">
+            <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>
+              Clear local draft
+            </button>
+          </div>
+          {localDraftSavedAt ? (
+            <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p>
+          ) : (
+            <p className="control-help">No local draft backup is currently stored on this device.</p>
+          )}
+        </section>
+
+        <section className="workspace-overlay-section stack">
+          <ConsentPreferencesPanel />
+        </section>
+
+        <section className="workspace-overlay-section stack">
+          <div className="account-section-intro">
+            <strong>{authUser ? "Account" : "Account access"}</strong>
+            <span>{authUser ? "Manage recovery and the current session." : "Use My Decks to sign in and manage saved deck versions."}</span>
+          </div>
+          {authUser ? (
+            <>
+              {renderMiniCard({
+                label: "Signed in as",
+                value: authUser.email || "Unknown user",
+                surface: "2",
+              })}
+              <div className="account-primary-actions">
+                <button className="btn" onClick={() => { void requestPasswordReset(authUser?.email || authEmail); }} disabled={authBusy}>
+                  Email reset link
+                </button>
+                {authUser?.is_admin ? (
+                  <a className="btn" href="/admin">
+                    Open admin
+                  </a>
+                ) : null}
+                <button className="btn" onClick={handleLogout} disabled={authBusy}>
+                  Sign out
+                </button>
+              </div>
+              <p className="control-help">Password recovery uses a one-time email magic link. Signing out keeps local draft backups on this device unless you clear them.</p>
+            </>
+          ) : (
+            <>
+              <p className="control-help">Sign in or create an account from My Decks to save decklists, tagged outputs, analysis snapshots, and version history.</p>
+              <div className="account-primary-actions">
+                <button className="btn" onClick={() => { setAuthMode("login"); openOverlay("decks"); }}>
+                  Open My Decks
+                </button>
+              </div>
+            </>
+          )}
+        </section>
       </div>
     );
   }
@@ -2885,20 +3073,34 @@ export default function HomePage() {
           Views
         </button>
       </div>
-      <button
-        type="button"
-        className="account-launcher"
-        aria-haspopup="dialog"
-        aria-expanded={accountOpen}
-        aria-controls="account-drawer"
-        onClick={() => setAccountOpen(true)}
-      >
-        <span className="account-launcher-avatar">{accountInitials}</span>
-        <span className="account-launcher-copy">
-          <strong>{accountTriggerLabel}</strong>
-          <span>{accountTriggerMeta}</span>
-        </span>
-      </button>
+      <div className="account-chrome">
+        <button
+          ref={accountLauncherRef}
+          type="button"
+          className="account-launcher"
+          aria-haspopup="menu"
+          aria-expanded={accountMenuOpen}
+          aria-controls="account-dropdown"
+          aria-label={authUser ? `Open menu for ${authUser.email}` : "Open decks and settings"}
+          onClick={() => setAccountMenuOpen((open) => !open)}
+        >
+          <span className="account-launcher-avatar">{accountInitials}</span>
+        </button>
+        <div
+          id="account-dropdown"
+          ref={accountMenuRef}
+          className={`account-menu ${accountMenuOpen ? "open" : ""}`}
+          role="menu"
+          aria-hidden={!accountMenuOpen}
+        >
+          <button type="button" className="account-menu-item" role="menuitem" onClick={() => openOverlay("decks")}>
+            My Decks
+          </button>
+          <button type="button" className="account-menu-item" role="menuitem" onClick={() => openOverlay("settings")}>
+            Settings
+          </button>
+        </div>
+      </div>
       <aside className="ui-sidebar">
         <div className="sidebar-scroll stack">
           {sidebarProgressMeta.show ? (
@@ -2924,138 +3126,12 @@ export default function HomePage() {
               />
               <button className="btn" onClick={importFromUrl}>Analyze URL</button>
               <p className="control-help">Supported sources include Moxfield and Archidekt. If a source blocks access, paste the decklist instead.</p>
-              <label>Card art style</label>
-              <select className="select" value={artPreference} onChange={(e) => setArtPreference(normalizeArtPreference(e.target.value))}>
-                {ART_PREFERENCE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <p className="control-help">{selectedArtPreference.description}</p>
               {urlImportNotice ? (
                 <p className={`import-notice import-notice-${urlImportNotice.tone}`} data-tone={urlImportNotice.tone === "error" ? "danger" : urlImportNotice.tone === "warn" ? "warning" : "accent"}>
                   {urlImportNotice.text}
                 </p>
               ) : null}
-            </div>
-          </div>
-
-          <div className="sidebar-group sidebar-pane">
-            <div className="sidebar-section-label">Table Assumptions</div>
-            <div className="stack">
-              <label>Inferred bracket</label>
-              {renderMiniCard({
-                label: "Inferred bracket",
-                value: currentBracketReport ? `Bracket ${currentBracketValue}` : "Pending",
-                surface: "2",
-                help: currentBracketName || "Deck.Check will infer bracket from the deck once tagging starts.",
-                children: <div className="control-help">{currentBracketName || "Deck.Check will infer bracket from the deck once tagging starts."}</div>,
-              })}
-              <p className="control-help">Deck.Check infers bracket from fast mana, tutors, combo density, Game Changers, and simulated speed when available.</p>
-
-              <label>Simulation Runs: {simRuns}</label>
-              <p className="control-help">More runs make the results steadier. 2,000 is a good default.</p>
-              <input
-                className="slider"
-                type="range"
-                min={500}
-                max={10000}
-                step={500}
-                value={simRuns}
-                onChange={(e) => setSimRuns(Number(e.target.value))}
-              />
-
-              <label>Budget Cap (USD/card)</label>
-              <p className="control-help">Only affects suggested adds. Leave blank for no budget filter.</p>
-              <input
-                className="input"
-                type="text"
-                inputMode="decimal"
-                value={budgetMaxUsd}
-                onChange={(e) => setBudgetMaxUsd(e.target.value)}
-                placeholder="e.g. 10"
-              />
-
-              <label className="setting-toggle" htmlFor="advanced-settings-toggle">
-                <span>
-                  <strong>Advanced settings</strong>
-                  <span className="control-help setting-toggle-help">Show tuning controls for sim style and matchup assumptions.</span>
-                </span>
-                <input
-                  id="advanced-settings-toggle"
-                  type="checkbox"
-                  checked={showAdvancedSettings}
-                  onChange={(e) => setAdvancedMode(e.target.checked)}
-                />
-              </label>
-
-              {showAdvancedSettings ? (
-                <div className="advanced-settings stack">
-                  <label>Simulation Style</label>
-                  <select className="select" value={policy} onChange={(e) => setPolicy(e.target.value)}>
-                    <option value="auto">Auto</option>
-                    <option value="casual">Casual value</option>
-                    <option value="optimized">Optimized mid-power</option>
-                    <option value="cedh">cEDH-like speed</option>
-                    <option value="commander-centric">Commander-centric</option>
-                    <option value="hold commander">Hold commander</option>
-                  </select>
-                  <p className="control-help">
-                    Auto is recommended. Effective style right now: <strong>{computeEffectivePolicy()}</strong>.
-                  </p>
-
-                  <label>Turn Limit: {turnLimit}</label>
-                  <p className="control-help">Increase this for slower decks that usually win later than turn 8.</p>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={5}
-                    max={14}
-                    step={1}
-                    value={turnLimit}
-                    onChange={(e) => setTurnLimit(Number(e.target.value))}
-                  />
-
-                  <label>Table Pressure: {tablePressure}%</label>
-                  <p className="control-help">How often the sim assumes opponents force you to spend interaction.</p>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={10}
-                    value={tablePressure}
-                    onChange={(e) => setTablePressure(Number(e.target.value))}
-                  />
-
-                  <label>Mulligan Aggression: {mulliganAggression}%</label>
-                  <p className="control-help">Higher keeps faster, riskier hands. Lower keeps steadier hands.</p>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={10}
-                    value={mulliganAggression}
-                    onChange={(e) => setMulliganAggression(Number(e.target.value))}
-                  />
-
-                  <label>Commander Priority: {commanderPriority}%</label>
-                  <p className="control-help">Higher casts commander earlier. Lower develops the board first.</p>
-                  <input
-                    className="slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={10}
-                    value={commanderPriority}
-                    onChange={(e) => setCommanderPriority(Number(e.target.value))}
-                  />
-                </div>
-              ) : (
-                <p className="control-help">Advanced mode is off. Deck.Check is using sensible defaults behind the scenes.</p>
-              )}
+              <p className="control-help">Saved decks, privacy choices, and tuning controls now live in the menu at the top right.</p>
             </div>
           </div>
         </div>
@@ -3211,7 +3287,7 @@ export default function HomePage() {
                 <div className="card-preview-scroll">
                   <table className="table card-preview-table" style={{ marginTop: 6 }}>
                     <thead>
-                      <tr><th>Card</th><th>Role hint</th></tr>
+                      <tr><th>Card</th><th>Mana cost</th><th>Role hint</th></tr>
                     </thead>
                     <tbody>
                       {(tagRes?.cards || []).map((c: any, i: number) => {
@@ -3233,6 +3309,7 @@ export default function HomePage() {
                               {isCommanderCard ? <span className="card-preview-badge">Commander</span> : null}
                             </span>
                           </td>
+                          <td>{c?.mana_cost ? <ManaText text={String(c.mana_cost)} /> : "n/a"}</td>
                           <td>{(c.tags || []).slice(0, 2).join(", ") || "n/a"}</td>
                         </tr>
                         );
@@ -4795,60 +4872,76 @@ export default function HomePage() {
         </div>
       </main>
 
-      {accountOpen ? <button type="button" className="account-overlay" aria-label="Close account drawer" onClick={() => setAccountOpen(false)} /> : null}
-      <aside id="account-drawer" className={`account-drawer ${accountOpen ? "open" : ""}`} aria-hidden={!accountOpen} role="dialog" aria-modal="true" aria-labelledby="account-drawer-title">
-        <div className="account-drawer-header">
-          <div className="account-drawer-heading">
-            <div className="panel-kicker">Account</div>
-            <h3 id="account-drawer-title">{authUser ? "Deck Library" : resetToken ? "Recover Account" : "Sign In"}</h3>
-            {authUser ? (
-              <p className="account-drawer-subtitle">
-                {authUser.email}
-              </p>
+      {activeOverlay ? <button type="button" className="account-overlay" aria-label="Close workspace overlay" onClick={closeOverlay} /> : null}
+
+      {isDecksOverlayOpen ? (
+        <aside
+          id="decks-overlay"
+          className="workspace-overlay-panel is-decks"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="decks-overlay-title"
+        >
+          {renderOverlayBanner({
+            id: "decks-overlay-title",
+            title: "My Decks",
+            kicker: authUser ? `${projects.length} saved deck${projects.length === 1 ? "" : "s"}` : (activeAuthMode === "recover" ? "Account recovery" : "Deck library"),
+            subtitle: authUser ? (hasUnsavedChanges ? "Current deck has unsaved changes." : "Load a saved snapshot straight into the overview.") : "Sign in, recover access, or create an account to save deck history.",
+          })}
+          {!authUser && !resetToken ? (
+            <div className="workspace-overlay-tabs" role="tablist" aria-label="Deck account access">
+              {[
+                { key: "login", label: "Log in" },
+                { key: "register", label: "Create account" },
+                { key: "recover", label: "Recover" },
+              ].map((tabOption) => (
+                <button
+                  key={tabOption.key}
+                  type="button"
+                  className={`btn tab-btn ${activeAuthMode === tabOption.key ? "active" : ""}`}
+                  aria-pressed={activeAuthMode === tabOption.key}
+                  onClick={() => setAuthMode(tabOption.key as AuthMode)}
+                >
+                  {tabOption.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="workspace-overlay-body">
+            {!authChecked ? (
+              <p className="control-help">Checking session…</p>
+            ) : authUser ? (
+              renderDeckLibrary()
             ) : (
-              <p className="account-drawer-subtitle">
-                Save decks, reopen versions, and keep analysis attached to your list.
-              </p>
+              renderSignedOutDecks()
             )}
+            {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
+            {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
           </div>
-          <button type="button" className="account-drawer-close" aria-label="Close account drawer" onClick={() => setAccountOpen(false)}>×</button>
-        </div>
-        {!resetToken ? (
-          <div className="account-drawer-tabs" role="tablist" aria-label="Account sections">
-            {(authUser
-              ? [
-                  { key: "library", label: "Library" },
-                  { key: "security", label: "Security" },
-                ]
-              : [
-                  { key: "login", label: "Log in" },
-                  { key: "register", label: "Create account" },
-                  { key: "recover", label: "Recover" },
-                ]).map((tabOption) => (
-              <button
-                key={tabOption.key}
-                type="button"
-                className={`btn tab-btn ${activeAccountTab === tabOption.key ? "active" : ""}`}
-                aria-pressed={activeAccountTab === tabOption.key}
-                onClick={() => setAccountTab(tabOption.key as "login" | "register" | "recover" | "library" | "security")}
-              >
-                {tabOption.label}
-              </button>
-            ))}
+        </aside>
+      ) : null}
+
+      {isSettingsOverlayOpen ? (
+        <aside
+          id="settings-overlay"
+          className="workspace-overlay-panel is-settings"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-overlay-title"
+        >
+          {renderOverlayBanner({
+            id: "settings-overlay-title",
+            title: "Settings",
+            kicker: "Deck.Check",
+            subtitle: "Simulation, privacy, and account controls now live here.",
+          })}
+          <div className="workspace-overlay-body">
+            {renderSettingsPanel()}
+            {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
+            {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
           </div>
-        ) : null}
-        <div className="account-drawer-body">
-          {!authChecked ? (
-            <p className="control-help">Checking session…</p>
-          ) : authUser ? (
-            activeAccountTab === "security" ? renderAccountSecurity() : renderAccountLibrary()
-          ) : (
-            renderSignedOutAccount()
-          )}
-          {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
-          {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
-        </div>
-      </aside>
+        </aside>
+      ) : null}
 
     </div>
   );

@@ -1,29 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const DEFAULT_API_BASE = "https://deck-check.onrender.com";
+import { apiUrl } from "../api-url";
 const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
-
-function sanitizeApiBase(raw: string): string {
-  const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
-  const match = trimmed.match(/https?:\/\/[^\s'"]+/i);
-  return (match ? match[0] : trimmed).replace(/\/+$/g, "");
-}
-
-const API_BASE = sanitizeApiBase(RAW_API_BASE);
-
-function apiUrl(path: string): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  const base =
-    API_BASE ||
-    (typeof window !== "undefined" && window.location.hostname.endsWith("netlify.app")
-      ? DEFAULT_API_BASE
-      : "");
-  if (!base) return normalized;
-  return `${base}${normalized}`;
-}
 
 type SessionUser = {
   id: number;

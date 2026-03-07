@@ -9,6 +9,7 @@ from typing import Dict, List, Sequence
 
 from app.schemas.deck import CardEntry
 from app.services.edhrec import EDHRecService
+from app.services.mana import resolve_mana_cost, resolve_mana_cost_components, resolve_mana_value
 from app.services.scryfall import CardDataService
 from app.services.tagger import compute_type_theme_profile
 
@@ -208,7 +209,8 @@ def _pip_weights_from_symbol(symbol: str) -> Dict[str, float]:
     return {}
 
 
-def _mana_costs_for_payload(payload: Dict) -> List[str]:
+def _mana_costs_for_payload(entry: CardEntry | None, payload: Dict) -> List[str]:
+    entry_cost = str((entry.mana_cost if entry is not None else None) or "").strip()
     out: List[str] = []
     mc = payload.get("mana_cost")
     if isinstance(mc, str) and mc:
@@ -225,7 +227,12 @@ def _mana_costs_for_payload(payload: Dict) -> List[str]:
             continue
         seen.add(x)
         unique.append(x)
-    return unique
+    if unique:
+        return unique
+    if entry_cost:
+        return [entry_cost]
+    components = resolve_mana_cost_components(entry, payload)
+    return components if components else []
 
 
 def _produced_colors(payload: Dict) -> set[str]:
@@ -250,10 +257,10 @@ def _produced_colors(payload: Dict) -> set[str]:
     return colors
 
 
-def _source_weight(payload: Dict) -> float:
+def _source_weight(entry: CardEntry | None, payload: Dict) -> float:
     type_line = str(payload.get("type_line") or "").lower()
     text = str(payload.get("oracle_text") or "").lower()
-    mv = _safe_float(payload.get("cmc"), 0.0)
+    mv = _safe_float(resolve_mana_value(entry, payload), 0.0)
     is_land = "land" in type_line
     if is_land:
         if "enters the battlefield tapped unless" in text:
@@ -336,10 +343,11 @@ def _manabase_analysis(
     source_cards = [c for c in cards if c.section == "deck"]
     for entry in main_cards:
         payload = card_map.get(entry.name) or {}
-        costs = _mana_costs_for_payload(payload)
+        costs = _mana_costs_for_payload(entry, payload)
         if not costs:
             continue
-        mv = _safe_float(payload.get("cmc"), 0.0)
+        mana_cost = resolve_mana_cost(entry, payload) or ""
+        mv = _safe_float(resolve_mana_value(entry, payload), 0.0)
         per_cost_qty_weight = float(entry.qty) / max(1, len(costs))
         local = Counter()
         for cost in costs:
@@ -361,7 +369,7 @@ def _manabase_analysis(
                 {
                     "card": entry.name,
                     "qty": entry.qty,
-                    "mana_cost": payload.get("mana_cost") or "",
+                    "mana_cost": mana_cost,
                     "mana_value": mv,
                     "pressure": round(weighted_pressure, 3),
                     "pips": {k: round(v, 3) for k, v in local.items() if k in MANA_ORDER},
@@ -375,7 +383,7 @@ def _manabase_analysis(
             continue
         type_line = str(payload.get("type_line") or "").lower()
         is_land = "land" in type_line
-        w = _source_weight(payload)
+        w = _source_weight(entry, payload)
         for c in produced:
             if c not in source_rows:
                 continue
@@ -491,7 +499,8 @@ def _manabase_analysis(
 
     for entry in source_cards:
         payload = card_map.get(entry.name) or {}
-        mv = _safe_float(payload.get("cmc"), 0.0)
+        mana_cost = resolve_mana_cost(entry, payload) or ""
+        mv = _safe_float(resolve_mana_value(entry, payload), 0.0)
         is_land = _is_land_payload(payload)
         if is_land:
             total_mv_with_lands += 0.0
@@ -504,7 +513,7 @@ def _manabase_analysis(
         expanded_mv_with_lands.extend([mv] * qty)
         expanded_mv_without_lands.extend([mv] * qty)
 
-        costs = _mana_costs_for_payload(payload)
+        costs = _mana_costs_for_payload(entry, payload)
         local = Counter()
         for cost in costs:
             for sym in _MANA_SYMBOL_RE.findall(cost):
@@ -554,7 +563,7 @@ def _manabase_analysis(
             {
                 "card": entry.name,
                 "qty": qty,
-                "mana_cost": payload.get("mana_cost") or "",
+                "mana_cost": mana_cost,
                 "mana_value": mv,
                 "group": group,
                 "p_on_curve_est": round(p_on_curve, 4),
@@ -852,10 +861,11 @@ def _role_cards_map(cards: List[CardEntry], focus_roles: List[str]) -> Dict[str,
     return out
 
 
-def role_breakdown(cards: List[CardEntry]) -> Dict:
+def role_breakdown(cards: List[CardEntry], card_map: Dict[str, Dict] | None = None) -> Dict:
     role_counts = Counter()
     cmc_buckets = defaultdict(int)
     land_count = 0
+    card_map = card_map or {}
     for c in cards:
         if c.section not in {"deck", "commander"}:
             continue
@@ -863,6 +873,14 @@ def role_breakdown(cards: List[CardEntry]) -> Dict:
             role_counts[t] += c.qty
         if "#Land" in c.tags:
             land_count += c.qty
+        payload = card_map.get(c.name) or {}
+        mv = resolve_mana_value(c, payload)
+        if mv is None:
+            if "#Land" in c.tags:
+                mv = 0.0
+            else:
+                continue
+        cmc_buckets[int(round(mv))] += c.qty
 
     return {
         "roles": dict(role_counts),
@@ -1929,7 +1947,8 @@ def analyze(
     commander_colors: List[str] | None = None,
     card_map: Dict[str, Dict] | None = None,
 ) -> Dict:
-    rb = role_breakdown(cards)
+    deck_card_map = card_map or {}
+    rb = role_breakdown(cards, deck_card_map)
     importance = importance_scores(cards, sim_summary)
     top = importance[:20]
     bottom = list(reversed(importance[-20:]))
@@ -2022,7 +2041,6 @@ def analyze(
 
     intent = _intent_summary(commander, cards, sim_summary, combo_intel, importance=top, type_profile=type_profile)
     actions = _actionable_actions(gaps, combo_intel)
-    deck_card_map = card_map or {}
     manabase_analysis = _manabase_analysis(
         cards,
         commander_colors=commander_colors or [],
