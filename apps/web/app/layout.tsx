@@ -21,8 +21,11 @@ const fontMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Deck.Check",
-  description: "Commander deck parser, simulator, and optimizer",
+  title: {
+    default: "Deck.Check",
+    template: "%s",
+  },
+  description: "Diagnose, refine, and prepare to play the Commander deck you already built.",
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"),
   icons: {
     icon: "/icon.svg",

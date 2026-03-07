@@ -116,6 +116,31 @@ def test_combo_service_keeps_only_one_card_near_miss_lines(monkeypatch):
     assert [v["variant_id"] for v in out["near_miss_variants"]] == ["11"]
 
 
+def test_combo_service_filters_one_card_away_lines_by_color_identity(monkeypatch):
+    from app.services import commanderspellbook as csb
+
+    monkeypatch.setattr(csb, "redis_conn", _FakeRedis())
+    svc = ComboIntelService()
+    fake_rows = [
+        {
+            "id": 21,
+            "identity": "B",
+            "description": "Off-color near miss",
+            "uses": [{"card": {"name": "A"}}, {"card": {"name": "Black Card"}}],
+        },
+        {
+            "id": 22,
+            "identity": "U",
+            "description": "On-color near miss",
+            "uses": [{"card": {"name": "A"}}, {"card": {"name": "Blue Card"}}],
+        },
+    ]
+    monkeypatch.setattr(svc, "_fetch_variants_for_cards", lambda cards, limit=200: fake_rows)
+
+    out = svc.get_combo_intel(["A"], commander="Cmdr", deck_colors=["U"])
+    assert [v["variant_id"] for v in out["near_miss_variants"]] == ["22"]
+
+
 def test_analyzer_includes_combo_intel(monkeypatch):
     cards = [
         CardEntry(qty=1, name="Card A", section="deck", tags=["#Combo", "#Engine"]),

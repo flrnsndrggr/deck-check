@@ -13,6 +13,7 @@ from app.services.commander_utils import normalize_name
 
 COMMANDERSPELLBOOK_VARIANTS_URL = "https://backend.commanderspellbook.com/variants/"
 BASIC_LANDS = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
+COLOR_ORDER = ("W", "U", "B", "R", "G")
 
 
 def _commander_list(commander: str | List[str] | None) -> List[str]:
@@ -30,6 +31,18 @@ def _deck_hash(cards: Iterable[str], commander: str | List[str] | None) -> str:
     }
     stable = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(stable.encode()).hexdigest()
+
+
+def _normalize_color_identity(colors: Iterable[str] | None) -> Set[str]:
+    return {str(color).strip().upper() for color in (colors or []) if str(color).strip().upper() in COLOR_ORDER}
+
+
+def _variant_within_color_identity(identity: str, deck_colors: Iterable[str] | None) -> bool:
+    allowed = _normalize_color_identity(deck_colors)
+    if not allowed:
+        return True
+    variant_colors = {char for char in str(identity or "").upper() if char in COLOR_ORDER}
+    return variant_colors.issubset(allowed)
 
 
 def _normalize_variant(raw: Dict[str, Any], deck_names: Set[str], commander: str | List[str] | None) -> Dict[str, Any]:
@@ -78,9 +91,10 @@ class ComboIntelService:
         self.retries = retries
         self.ttl_seconds = ttl_seconds
 
-    def _cache_key(self, cards: List[str], commander: str | List[str] | None) -> str:
+    def _cache_key(self, cards: List[str], commander: str | List[str] | None, deck_colors: Iterable[str] | None = None) -> str:
         commander_key = ",".join(sorted(normalize_name(name) for name in _commander_list(commander)))
-        return f"combointel:v3:{_deck_hash(cards, commander)}:{commander_key}"
+        color_key = "".join(sorted(_normalize_color_identity(deck_colors)))
+        return f"combointel:v4:{_deck_hash(cards, commander)}:{commander_key}:{color_key}"
 
     def _read_cache(self, key: str) -> Dict[str, Any] | None:
         try:
@@ -141,8 +155,14 @@ class ComboIntelService:
                     break
         return list(unique_rows.values())[:limit]
 
-    def get_combo_intel(self, cards: List[str], commander: str | List[str] | None = None, max_variants: int = 200) -> Dict[str, Any]:
-        key = self._cache_key(cards, commander)
+    def get_combo_intel(
+        self,
+        cards: List[str],
+        commander: str | List[str] | None = None,
+        max_variants: int = 200,
+        deck_colors: Iterable[str] | None = None,
+    ) -> Dict[str, Any]:
+        key = self._cache_key(cards, commander, deck_colors)
         cached = self._read_cache(key)
         if cached:
             return cached
@@ -167,7 +187,13 @@ class ComboIntelService:
         if len(variants_raw) >= max_variants:
             warnings.append(f"CommanderSpellbook results capped at {max_variants} variants; some combo lines may be omitted.")
         matched = [v for v in normalized if v["status"] == "complete"]
-        near_miss = [v for v in normalized if v["status"] == "near_miss" and int(v.get("missing_count", 99)) == 1]
+        near_miss = [
+            v
+            for v in normalized
+            if v["status"] == "near_miss"
+            and int(v.get("missing_count", 99)) == 1
+            and _variant_within_color_identity(v.get("identity", ""), deck_colors)
+        ]
         matched.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
         near_miss.sort(key=lambda x: (-x["score"], x["missing_count"], x["variant_id"]))
         support_score = 0.0

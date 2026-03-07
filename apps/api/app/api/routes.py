@@ -630,7 +630,7 @@ def run_sim(req: SimRunRequest):
     payload["color_identity_size"] = len(commander_colors) if commander_names else 3
     payload["commanders"] = commander_names
     payload["commander"] = commander_display_name(commander_names) or req.commander
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
     payload["cards"] = enrich_sim_cards(req.cards, card_map, commander_names)
     payload["combo_variants"] = combo_intel.get("matched_variants", [])
     payload["combo_source_live"] = not bool(combo_intel.get("warnings"))
@@ -697,7 +697,14 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     _, _, bracket_report = _validate_deck_compat(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
     primary_commander = primary_commander_name(commander_names) or req.commander
     commander_display = commander_display_name(commander_names) or req.commander
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
+    combo_service = ComboIntelService()
+    try:
+        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
+    except TypeError as exc:
+        # Keep the route compatible with narrower monkeypatched test doubles.
+        if "deck_colors" not in str(exc):
+            raise
+        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names)
     out = analyze(
         req.cards,
         req.sim_summary,
