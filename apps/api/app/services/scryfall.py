@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -65,6 +66,15 @@ CARD_FIELDS = [
     "all_parts",
     "card_faces",
 ]
+
+
+@dataclass(frozen=True)
+class QuerySpec:
+    label: str
+    query: str
+    limit: int = 120
+    order: str = "name"
+    direction: str = "asc"
 
 
 def _as_payload(obj: Any) -> Dict[str, Any]:
@@ -657,31 +667,114 @@ class CardDataService:
             cards = cards[:limit]
         self._store_cards(cards)
 
-    def search_candidates(self, query: str, color_identity: str, limit: int = 10) -> List[Dict[str, Any]]:
-        cache_key = f"scryfall:search:{hashlib.sha256(json.dumps({'q': query, 'ci': color_identity, 'limit': limit}, sort_keys=True).encode()).hexdigest()}"
+    def search_candidates(
+        self,
+        query: str,
+        color_identity: str | None,
+        limit: int = 10,
+        order: str = "name",
+        direction: str = "asc",
+    ) -> List[Dict[str, Any]]:
+        cache_key = f"scryfall:search:{hashlib.sha256(json.dumps({'q': query, 'ci': color_identity, 'limit': limit, 'order': order, 'direction': direction}, sort_keys=True).encode()).hexdigest()}"
         cached = self._cache_json_get(cache_key)
         if isinstance(cached, list):
             return cached
-        ci = (color_identity or "").upper()
-        ci_filter = f"id<={ci}" if ci else "id:c"
-        q = f"{query} {ci_filter} game:paper legal:commander"
+        ci = None if color_identity is None else (color_identity or "").upper()
+        ci_filter = f"id<={ci}" if ci else ("id:c" if color_identity == "" else "")
+        q = " ".join(part for part in [query, ci_filter, "game:paper", "legal:commander"] if part)
         with httpx.Client(timeout=30) as client:
-            resp = client.get(SEARCH_URL, params={"q": q, "order": "edhrec", "unique": "cards"})
-            if resp.status_code >= 400:
-                return []
-            data = resp.json().get("data", [])
-        ci_set = set(ci)
+            params: Dict[str, Any] = {"q": q, "unique": "cards"}
+            if order:
+                params["order"] = order
+            if direction and order in {"name", "set", "released", "cmc", "power", "toughness", "usd", "eur", "tix", "edhrec", "artist"}:
+                params["dir"] = direction
+            data: List[Dict[str, Any]] = []
+            next_page: str | None = SEARCH_URL
+            first_page = True
+            while next_page and len(data) < max(limit, 1):
+                resp = client.get(next_page, params=params if first_page else None)
+                first_page = False
+                if resp.status_code >= 400:
+                    break
+                payload = resp.json()
+                data.extend(payload.get("data", []) or [])
+                next_page = payload.get("next_page") if payload.get("has_more") else None
+        ci_set = set(ci or "")
         out = []
+        seen_oracles = set()
         for d in data:
             card_ci = set(d.get("color_identity") or [])
             if ci_set:
                 if not card_ci.issubset(ci_set):
                     continue
             else:
-                if card_ci:
+                if color_identity == "" and card_ci:
                     continue
+            oracle_id = str(d.get("oracle_id") or "")
+            if oracle_id and oracle_id in seen_oracles:
+                continue
+            if oracle_id:
+                seen_oracles.add(oracle_id)
             out.append({k: d.get(k) for k in CARD_FIELDS})
             if len(out) >= limit:
                 break
         self._cache_json_set(cache_key, out)
         return out
+
+    def annotate_popularity_percentile(self, cards: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows = [dict(card) for card in cards]
+        ranked = sorted(
+            [(idx, int(card.get("edhrec_rank"))) for idx, card in enumerate(rows) if card.get("edhrec_rank") not in (None, "")],
+            key=lambda row: row[1],
+        )
+        if not ranked:
+            for row in rows:
+                row["popularity_pct"] = None
+            return rows
+        total = len(ranked)
+        pct_by_idx: Dict[int, float] = {}
+        for pos, (idx, _rank) in enumerate(ranked):
+            pct_by_idx[idx] = round((pos + 1) / total, 4)
+        for idx, row in enumerate(rows):
+            row["popularity_pct"] = pct_by_idx.get(idx)
+        return rows
+
+    def search_union(
+        self,
+        queries: Iterable[QuerySpec],
+        color_identity: str | None,
+    ) -> List[Dict[str, Any]]:
+        specs = list(queries)
+        cache_key = f"scryfall:search-union:{hashlib.sha256(json.dumps({'queries': [spec.__dict__ for spec in specs], 'ci': color_identity}, sort_keys=True).encode()).hexdigest()}"
+        cached = self._cache_json_get(cache_key)
+        if isinstance(cached, list):
+            return cached
+
+        merged: Dict[str, Dict[str, Any]] = {}
+        for spec in specs:
+            results = self.search_candidates(
+                spec.query,
+                color_identity,
+                limit=spec.limit,
+                order=spec.order,
+                direction=spec.direction,
+            )
+            for card in results:
+                oracle_id = str(card.get("oracle_id") or "")
+                dedupe_key = oracle_id or _safe_union_fallback_key(card)
+                if not dedupe_key:
+                    continue
+                if dedupe_key not in merged:
+                    merged[dedupe_key] = dict(card)
+                    merged[dedupe_key]["matched_queries"] = []
+                labels = merged[dedupe_key]["matched_queries"]
+                if spec.label not in labels:
+                    labels.append(spec.label)
+
+        out = self.annotate_popularity_percentile(merged.values())
+        self._cache_json_set(cache_key, out)
+        return out
+
+
+def _safe_union_fallback_key(card: Dict[str, Any]) -> str:
+    return str(card.get("name") or "").strip().lower()

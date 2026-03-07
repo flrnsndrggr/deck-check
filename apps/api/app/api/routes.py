@@ -755,6 +755,7 @@ def strictly_better(req: StrictlyBetterRequest):
         selected_card=req.selected_card,
         commander=commander_display_name(commander_names_from_cards(req.cards, fallback_commander=req.commander)) or req.commander,
         budget_max_usd=req.budget_max_usd,
+        explain=req.explain,
     )
 
 

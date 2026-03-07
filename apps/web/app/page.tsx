@@ -15,7 +15,7 @@ import {
   Area,
   Legend,
 } from "recharts";
-import ReactMarkdown from "react-markdown";
+import { ManaMarkdown, ManaNode, ManaText } from "./mana-symbols";
 import { chartTheme, resolveTheme, type ResolvedTheme } from "./theme";
 
 const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
@@ -1519,12 +1519,12 @@ export default function HomePage() {
     if (!m) return null;
     return (
       <div className="metric-help">
-        <div><strong>What this shows:</strong> {m.what}</div>
-        {m.xAxis ? <div><strong>X-axis:</strong> {m.xAxis}</div> : null}
-        {m.yAxis ? <div><strong>Y-axis:</strong> {m.yAxis}</div> : null}
-        <div><strong>Good:</strong> {m.good}</div>
-        <div><strong>Warning/Bad:</strong> {m.bad}</div>
-        <div><strong>What to change:</strong> {m.change}</div>
+        <div><strong>What this shows:</strong> <ManaText text={m.what} /></div>
+        {m.xAxis ? <div><strong>X-axis:</strong> <ManaText text={m.xAxis} /></div> : null}
+        {m.yAxis ? <div><strong>Y-axis:</strong> <ManaText text={m.yAxis} /></div> : null}
+        <div><strong>Good:</strong> <ManaText text={m.good} /></div>
+        <div><strong>Warning/Bad:</strong> <ManaText text={m.bad} /></div>
+        <div><strong>What to change:</strong> <ManaText text={m.change} /></div>
       </div>
     );
   }
@@ -1532,7 +1532,7 @@ export default function HomePage() {
   function renderDeckBlurb(metricKey: string) {
     const text = graphBlurb?.[metricKey];
     if (!text) return null;
-    return <p className="deck-blurb">{text}</p>;
+    return <p className="deck-blurb"><ManaText text={text} /></p>;
   }
 
   function renderCardChip(
@@ -1578,6 +1578,41 @@ export default function HomePage() {
 
   function cardPoster(name: string) {
     return cardDisplay(name)?.normal || cardDisplay(name)?.small || "";
+  }
+
+  function renderComboCardGrid(
+    names: string[],
+    keyPrefix: string,
+    options?: { missingNames?: string[]; emptyText?: string },
+  ) {
+    const items = uniqueNonEmpty(names);
+    if (!items.length) {
+      return <p className="muted">{options?.emptyText || "No cards listed for this combo."}</p>;
+    }
+    const missing = new Set((options?.missingNames || []).map((name) => String(name || "").trim()));
+    return (
+      <div className="combo-card-grid">
+        {items.map((name, i) => {
+          const src = cardPoster(name);
+          const isMissing = missing.has(name);
+          return (
+            <button
+              key={`${keyPrefix}-${i}`}
+              type="button"
+              className={`combo-card-tile ${isMissing ? "is-missing" : ""}`}
+              onClick={() => setSelectedCard(name)}
+            >
+              {src ? (
+                <img src={src} alt={name} loading="lazy" className="combo-card-image" />
+              ) : (
+                <div className="combo-card-image combo-card-image-placeholder" />
+              )}
+              <span className="combo-card-name">{name}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
   }
 
   function renderCardDetailMedia(
@@ -1668,7 +1703,7 @@ export default function HomePage() {
           {activeSections.map((section, idx) => (
             <div key={`${rowKey}-section-${idx}`} className="card-detail-section">
               <div className="card-detail-section-label">{section.label}</div>
-              {section.content}
+              <ManaNode node={section.content} />
             </div>
           ))}
           {activeLinks.length ? (
@@ -3130,9 +3165,8 @@ export default function HomePage() {
               <p><strong>Confidence:</strong> {typeof intentSummary?.confidence === "number" ? `${(intentSummary.confidence * 100).toFixed(1)}%` : "n/a"}</p>
               <p><strong>Combo support score:</strong> {comboIntel?.combo_support_score ?? 0} / 100</p>
               <p><strong>Complete combos in list:</strong> {comboComplete.length}</p>
-              {comboIntel?.fetched_at ? <p className="control-help">CommanderSpellbook fetched: {new Date(comboIntel.fetched_at).toLocaleString()}</p> : null}
               <p className="control-help">
-                Use the <strong>Combos</strong> tab for the full CommanderSpellbook catalog of complete combo lines already contained in this deck.
+                Use the <strong>Combos</strong> tab for the full combo catalog already contained in this deck.
               </p>
 
               <h3>Key Support Cards</h3>
@@ -3272,116 +3306,63 @@ export default function HomePage() {
 
           {tab === "Combos" && (
             <div className="guide-rendered">
-              <h2>CommanderSpellbook Combo Catalog</h2>
-              <p className="muted">
-                This view first shows complete CommanderSpellbook combos already contained in the decklist, then combos that are only one card short.
-                It is deck-construction evidence, not proof that the line is assembled, protected, and resolved on curve.
-              </p>
-
-              <div className="kpi-grid">
+              <div className="combo-top-grid">
                 <div className="mini-card">
                   <div className="mini-label">Complete lines</div>
                   <div className="mini-value tone-good">{comboComplete.length}</div>
-                  <div className="control-help">Known combo variants already fully contained in this decklist.</div>
                 </div>
                 <div className="mini-card">
                   <div className="mini-label">Combo support score</div>
                   <div className="mini-value">{comboIntel?.combo_support_score ?? 0} / 100</div>
-                  <div className="control-help">Higher means more complete CommanderSpellbook lines are already contained in the list.</div>
                 </div>
                 <div className="mini-card">
                   <div className="mini-label">One-card-away lines</div>
                   <div className="mini-value">{comboNearMiss.length}</div>
-                  <div className="control-help">CommanderSpellbook variants where this deck is missing exactly one named card.</div>
-                </div>
-                <div className="mini-card">
-                  <div className="mini-label">Source timestamp</div>
-                  <div className="mini-value">{comboIntel?.fetched_at ? "Live" : "Unknown"}</div>
-                  <div className="control-help">
-                    {comboIntel?.fetched_at ? new Date(comboIntel.fetched_at).toLocaleString() : "No fetch timestamp recorded."}
-                  </div>
                 </div>
               </div>
 
-              {comboIntel?.warnings?.length > 0 && (
-                <div className="block">
-                  <strong>Source warnings</strong>
-                  <ul className="list-compact">
-                    {comboIntel.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
-                  </ul>
-                </div>
-              )}
-
-              <div className="stack">
-                <h3>Complete Combos In This Deck</h3>
+              <section className="combo-section">
+                <h2 className="combo-section-title">Complete Combos In This Deck</h2>
                 {comboComplete.length === 0 ? (
-                  <p className="muted">No complete CommanderSpellbook combo lines detected in the current list.</p>
+                  <p className="muted">No complete combo lines detected in the current list.</p>
                 ) : (
                   comboComplete.map((variant: any, i: number) => (
-                    <div key={`combo-complete-${variant?.variant_id || i}`} className="block combo-variant-card">
-                      <div className="combo-variant-header">
-                        <div className="stack" style={{ gap: 4 }}>
-                          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                            <span className="combo-badge combo-badge-complete">Complete</span>
-                            <strong>{variant?.variant_id || `Combo ${i + 1}`}</strong>
-                            {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
-                          </div>
-                          <div className="control-help">
-                            Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
-                          </div>
-                        </div>
+                    <article key={`combo-complete-${variant?.variant_id || i}`} className="combo-line">
+                      <div className="combo-line-top">
                         {variant?.source_url ? (
                           <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
-                        ) : null}
+                        ) : <span />}
                       </div>
-                      {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
-                      <div className="control-help">Cards in this line</div>
-                      {renderCardRow(variant?.cards || [], `combo-complete-all-${i}`, {
+                      {renderComboCardGrid(variant?.cards || [], `combo-complete-all-${i}`, {
                         emptyText: "No cards listed for this combo.",
                       })}
-                    </div>
+                      {variant?.recipe ? <p className="combo-line-explainer"><ManaText text={variant.recipe} /></p> : null}
+                    </article>
                   ))
                 )}
-              </div>
+              </section>
 
-              <div className="stack">
-                <h3>One Card Away</h3>
-                <p className="control-help">
-                  These are CommanderSpellbook lines where every piece except one is already present. Use this to spot compact upgrade paths without mixing them into the fully-contained combo list.
-                </p>
+              <section className="combo-section">
+                <h2 className="combo-section-title">One Card Away</h2>
                 {comboNearMiss.length === 0 ? (
-                  <p className="muted">No one-card-away CommanderSpellbook combos detected in the current list.</p>
+                  <p className="muted">No one-card-away combo lines detected in the current list.</p>
                 ) : (
                   comboNearMiss.map((variant: any, i: number) => (
-                    <div key={`combo-nearmiss-${variant?.variant_id || i}`} className="block combo-variant-card">
-                      <div className="combo-variant-header">
-                        <div className="stack" style={{ gap: 4 }}>
-                          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                            <span className="combo-badge combo-badge-nearmiss">Missing 1</span>
-                            <strong>{variant?.variant_id || `Near-miss ${i + 1}`}</strong>
-                            {variant?.identity ? <span className="control-help">Identity: {variant.identity}</span> : null}
-                          </div>
-                          <div className="control-help">
-                            Coverage {Math.round((Number(variant?.card_coverage || 0) || 0) * 100)}% · Missing {variant?.missing_count || 0} · Score {(Number(variant?.score || 0) || 0).toFixed(2)}
-                          </div>
-                        </div>
+                    <article key={`combo-nearmiss-${variant?.variant_id || i}`} className="combo-line">
+                      <div className="combo-line-top">
                         {variant?.source_url ? (
                           <a href={variant.source_url} target="_blank" rel="noreferrer">Open on CommanderSpellbook</a>
-                        ) : null}
+                        ) : <span />}
                       </div>
-                      {variant?.recipe ? <p className="control-help">{variant.recipe}</p> : null}
-                      <div className="control-help">Cards already in this line</div>
-                      {renderCardRow(variant?.present_cards || [], `combo-nearmiss-present-${i}`, {
-                        emptyText: "No present cards listed for this combo.",
+                      {renderComboCardGrid([...(variant?.present_cards || []), ...(variant?.missing_cards || [])], `combo-nearmiss-all-${i}`, {
+                        emptyText: "No cards listed for this combo.",
+                        missingNames: variant?.missing_cards || [],
                       })}
-                      <div className="control-help">Missing card</div>
-                      {renderCardRow(variant?.missing_cards || [], `combo-nearmiss-missing-${i}`, {
-                        emptyText: "No missing cards listed for this combo.",
-                      })}
-                    </div>
+                      {variant?.recipe ? <p className="combo-line-explainer"><ManaText text={variant.recipe} /></p> : null}
+                    </article>
                   ))
                 )}
-              </div>
+              </section>
             </div>
           )}
 
@@ -3934,7 +3915,7 @@ export default function HomePage() {
                               </button>
                             </td>
                             <td>{x.group === "spells" ? "Spell" : "Permanent"}</td>
-                            <td>{x.mana_cost || "n/a"}</td>
+                            <td>{x.mana_cost ? <ManaText text={x.mana_cost} /> : "n/a"}</td>
                             <td>{(Number(x.p_on_curve_est || 0) * 100).toFixed(1)}%</td>
                           </tr>
                         ))
@@ -4011,7 +3992,7 @@ export default function HomePage() {
                           <span>{x.card}</span>
                         </button>
                       </td>
-                      <td>{x.mana_cost || "n/a"}</td>
+                      <td>{x.mana_cost ? <ManaText text={x.mana_cost} /> : "n/a"}</td>
                       <td>{Number(x.pressure || 0).toFixed(2)}</td>
                       <td>{Number(x.mana_value || 0).toFixed(1)}</td>
                     </tr>
@@ -4131,7 +4112,7 @@ export default function HomePage() {
                       <p className="control-help">
                         Run index: {fw?.run_index ?? "n/a"} | Mulligans taken: {fw?.mulligans_taken ?? 0}
                       </p>
-                      {fw?.win_reason ? <p className="deck-blurb" style={{ marginTop: -4 }}>Why this counted as a win: {fw.win_reason}</p> : null}
+                      {fw?.win_reason ? <p className="deck-blurb" style={{ marginTop: -4 }}>Why this counted as a win: <ManaText text={fw.win_reason} /></p> : null}
 
                       <h4 style={{ margin: 0 }}>Mulligan Sequence</h4>
                       {(fw?.mulligan_steps || []).length === 0 ? (
@@ -4211,8 +4192,8 @@ export default function HomePage() {
                               </td>
                               <td>
                                 {t?.phase}
-                                {t?.wincon_hit ? <div className="control-help">Win line: {t.wincon_hit}</div> : null}
-                                {t?.win_reason ? <div className="control-help">{t.win_reason}</div> : null}
+                                {t?.wincon_hit ? <div className="control-help">Win line: <ManaText text={t.wincon_hit} /></div> : null}
+                                {t?.win_reason ? <div className="control-help"><ManaText text={t.win_reason} /></div> : null}
                               </td>
                               <td>{t?.mana_total ?? "n/a"}</td>
                             </tr>
@@ -4399,7 +4380,7 @@ export default function HomePage() {
 
           {tab === "Primer" && (
             <div className="guide-rendered">
-              <ReactMarkdown>{guides?.play_guide_md || "Run analysis first."}</ReactMarkdown>
+              <ManaMarkdown markdown={guides?.play_guide_md || "Run analysis first."} />
             </div>
           )}
 
@@ -4421,7 +4402,7 @@ export default function HomePage() {
                   Copy Rule 0 Brief
                 </button>
               </div>
-              <ReactMarkdown>{guides?.rule0_brief_md || "Run full analysis first."}</ReactMarkdown>
+              <ManaMarkdown markdown={guides?.rule0_brief_md || "Run full analysis first."} />
             </div>
           )}
             </>

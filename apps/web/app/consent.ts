@@ -13,6 +13,23 @@ export type ConsentState = {
 };
 
 export type ConsentDraft = Pick<ConsentState, "functional" | "analytics" | "marketing">;
+export type ConsentCategory = keyof ConsentDraft;
+export type ConsentGrant = "granted" | "denied";
+
+export type TrackingConsentEnvelope = {
+  necessary: ConsentGrant;
+  functional: ConsentGrant;
+  analytics: ConsentGrant;
+  marketing: ConsentGrant;
+  googleConsentMode: {
+    functionality_storage: ConsentGrant;
+    analytics_storage: ConsentGrant;
+    ad_storage: ConsentGrant;
+    ad_user_data: ConsentGrant;
+    ad_personalization: ConsentGrant;
+    security_storage: ConsentGrant;
+  };
+};
 
 export function defaultConsentDraft(): ConsentDraft {
   return {
@@ -129,6 +146,64 @@ export function consentGranted(value: ConsentState | null, category: keyof Conse
   return !!(value && value[category]);
 }
 
+export function toTrackingConsentEnvelope(value: ConsentState | null): TrackingConsentEnvelope {
+  const functional: ConsentGrant = value?.functional ? "granted" : "denied";
+  const analytics: ConsentGrant = value?.analytics ? "granted" : "denied";
+  const marketing: ConsentGrant = value?.marketing ? "granted" : "denied";
+  return {
+    necessary: "granted",
+    functional,
+    analytics,
+    marketing,
+    googleConsentMode: {
+      functionality_storage: functional,
+      analytics_storage: analytics,
+      ad_storage: marketing,
+      ad_user_data: marketing,
+      ad_personalization: marketing,
+      security_storage: "granted",
+    },
+  };
+}
+
+export function readDocumentConsentGrants(): TrackingConsentEnvelope {
+  if (typeof document === "undefined") {
+    return toTrackingConsentEnvelope(null);
+  }
+  const root = document.documentElement;
+  const granted = (value: string | undefined): ConsentGrant => (value === "granted" ? "granted" : "denied");
+  return {
+    necessary: "granted",
+    functional: granted(root.dataset.consentFunctional),
+    analytics: granted(root.dataset.consentAnalytics),
+    marketing: granted(root.dataset.consentMarketing),
+    googleConsentMode: {
+      functionality_storage: granted(root.dataset.consentFunctional),
+      analytics_storage: granted(root.dataset.consentAnalytics),
+      ad_storage: granted(root.dataset.consentMarketing),
+      ad_user_data: granted(root.dataset.consentMarketing),
+      ad_personalization: granted(root.dataset.consentMarketing),
+      security_storage: "granted",
+    },
+  };
+}
+
+export function readRuntimeConsent(): ConsentState | null {
+  if (typeof window === "undefined") return null;
+  const runtimeValue = (window as any).__deckCheckConsent;
+  return isValidConsent(runtimeValue) ? runtimeValue : readStoredConsent();
+}
+
+export function subscribeToConsentChanges(callback: (value: ConsentState | null) => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const listener = (event: Event) => {
+    const next = (event as CustomEvent<ConsentState | null>).detail ?? readRuntimeConsent();
+    callback(isValidConsent(next) ? next : null);
+  };
+  window.addEventListener("deckcheck:consent-changed", listener as EventListener);
+  return () => window.removeEventListener("deckcheck:consent-changed", listener as EventListener);
+}
+
 export const CONSENT_INIT_SCRIPT = `
 (() => {
   const STORAGE_KEY = "${CONSENT_STORAGE_KEY}";
@@ -154,6 +229,20 @@ export const CONSENT_INIT_SCRIPT = `
     root.dataset.consentAnalytics = next && next.analytics ? "granted" : "denied";
     root.dataset.consentMarketing = next && next.marketing ? "granted" : "denied";
     window.__deckCheckConsent = next;
+    window.__deckCheckTrackingConsent = {
+      necessary: "granted",
+      functional: next && next.functional ? "granted" : "denied",
+      analytics: next && next.analytics ? "granted" : "denied",
+      marketing: next && next.marketing ? "granted" : "denied",
+      googleConsentMode: {
+        functionality_storage: next && next.functional ? "granted" : "denied",
+        analytics_storage: next && next.analytics ? "granted" : "denied",
+        ad_storage: next && next.marketing ? "granted" : "denied",
+        ad_user_data: next && next.marketing ? "granted" : "denied",
+        ad_personalization: next && next.marketing ? "granted" : "denied",
+        security_storage: "granted",
+      },
+    };
   }
 
   let parsed = null;

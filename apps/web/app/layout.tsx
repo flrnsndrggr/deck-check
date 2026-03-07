@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import ConsentManager from "./consent-manager";
 import { CONSENT_INIT_SCRIPT } from "./consent";
+import { ManaSymbolsProvider } from "./mana-symbols";
 import { THEME_INIT_SCRIPT } from "./theme";
+import TrackingConsentBridge from "./tracking-consent-bridge";
 
 const fontUi = Instrument_Sans({
   subsets: ["latin"],
@@ -35,7 +37,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${fontUi.variable} ${fontMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CONSENT_INIT_SCRIPT }} />
-        {children}
+        <TrackingConsentBridge />
+        <ManaSymbolsProvider>{children}</ManaSymbolsProvider>
         <ConsentManager />
       </body>
     </html>
