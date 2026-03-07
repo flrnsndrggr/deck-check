@@ -16,6 +16,7 @@ SECTION_MAP = {
 
 
 QTY_RE = re.compile(r"^(\d+)\s*x?\s+(.+?)\s*$", re.IGNORECASE)
+TRAILING_TAGS_RE = re.compile(r"\s+(?:#!?\S+\s*)+$")
 
 
 def strip_about_block(text: str) -> str:
@@ -33,6 +34,12 @@ def _normalize_name(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     name = name.replace("’", "'")
     return name
+
+
+def _strip_trailing_tags(name: str) -> str:
+    # Moxfield-style tags are suffix tokens like "#Ramp" or "#!Ramp".
+    # Treat them as metadata so tagged exports round-trip back into parsing.
+    return TRAILING_TAGS_RE.sub("", name).strip()
 
 
 def parse_decklist(text: str) -> DeckParseResponse:
@@ -59,7 +66,7 @@ def parse_decklist(text: str) -> DeckParseResponse:
         if not m:
             continue
         qty = int(m.group(1))
-        name = _normalize_name(m.group(2))
+        name = _normalize_name(_strip_trailing_tags(m.group(2)))
 
         entry = CardEntry(qty=qty, name=name, section=current_section)
         cards.append(entry)
