@@ -849,6 +849,7 @@ body {
 :root {
   --workspace-banner-height: 240px;
   --workspace-banner-solid-stop: 40%;
+  --workspace-banner-art-focus-y: 64%;
   --banner-blue-strong: #0b46b7;
   --banner-blue-base: #155eef;
   --banner-blue-soft: #5b8cff;
@@ -905,7 +906,7 @@ body {
 }
 
 .workspace-banner-backdrop-panel {
-  background-position: center 36%;
+  background-position: center var(--workspace-banner-art-focus-y);
   background-repeat: no-repeat;
   background-size: cover;
   filter: saturate(0.98) contrast(1.02);
