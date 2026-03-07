@@ -165,14 +165,14 @@ ROLE_QUERY_LIBRARY: Dict[str, tuple[Sequence[str], int, str]] = {
 PACKAGE_LIBRARY: Dict[str, Dict[str, Any]] = {
     "artifacts": {
         "commander_signals": ["artifact", "equipment", "treasure", "clue", "construct", "thopter", "servo"],
-        "required_axes": {"artifact_mass": 14, "artifact_payoff": 4},
+        "required_axes": {"artifact_mass": 14, "artifact_payoff": 1},
         "preferred_axes": {"token_source": 2, "protection": 2},
         "compatible_secondary": ["tokens", "aristocrats", "blink", "control", "voltron"],
         "anti_synergy_tags": ["#GraveyardHate"],
         "queries": ['(t:artifact or o:"artifact") -t:land', 'o:"artifact creature token" -t:land'],
         "core_target": 16,
         "secondary_target": 7,
-        "support_targets": {"artifact_mass": 14, "artifact_payoff": 4},
+        "support_targets": {"artifact_mass": 14, "artifact_payoff": 1},
         "protection_target": 3,
         "land_count": 38,
         "curve_target": "mid",
