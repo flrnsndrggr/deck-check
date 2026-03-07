@@ -1101,15 +1101,21 @@ def _allocate_attacks(
     commander_slots: tuple[str, ...],
     opponent_table: VirtualTable,
     fingerprint,
+    *,
+    hazard_model_active: bool,
 ) -> Dict[str, Any]:
     projected_life = list(state.opp_life)
     projected_poison = list(state.opp_poison)
     projected_cmdr = [list(row) for row in state.opp_cmdr_dmg]
-    block_budget = blocker_budget_vector(opponent_table, state, state.turn)
-    removal_budget = [
-        opponent_table.opponents[idx].remaining_spot_removal if idx < len(opponent_table.opponents) else 0
-        for idx in range(3)
-    ]
+    if hazard_model_active:
+        block_budget = blocker_budget_vector(opponent_table, state, state.turn)
+        removal_budget = [
+            opponent_table.opponents[idx].remaining_spot_removal if idx < len(opponent_table.opponents) else 0
+            for idx in range(3)
+        ]
+    else:
+        block_budget = [0.0, 0.0, 0.0]
+        removal_budget = [0, 0, 0]
     allocations: List[Dict[str, Any]] = []
 
     for unit in units:
@@ -1154,7 +1160,7 @@ def _allocate_attacks(
         opp_idx = int(best_target)
         if best_payload["removable"]:
             removal_budget[opp_idx] -= 1
-            if opp_idx < len(opponent_table.opponents):
+            if hazard_model_active and opp_idx < len(opponent_table.opponents):
                 opponent_table.opponents[opp_idx].spent_spot_removal += 1
                 opponent_table.interaction_events["spot_removal"] += 1
                 opponent_table.answer_expenditure["spot_removal"] += 1
@@ -1554,6 +1560,7 @@ def simulate_one(
                 commander_slots,
                 opponent_table,
                 fingerprint,
+                hazard_model_active=bool(threat_model and resolved.opponent.threat_model),
             )
             _apply_combat_results(state, combat_snapshot, commander_index)
             turn_outcome = _evaluate_outcome(
@@ -1586,6 +1593,7 @@ def simulate_one(
                     commander_slots,
                     opponent_table,
                     fingerprint,
+                    hazard_model_active=bool(threat_model and resolved.opponent.threat_model),
                 )
                 _apply_combat_results(state, extra_snapshot, commander_index)
                 combat_snapshot = {

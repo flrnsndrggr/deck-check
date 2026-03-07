@@ -2079,7 +2079,7 @@ class RandomDeckService:
 
         selected = self._repair_deck(context, candidates, selected, spell_target)
         score, metrics = self._score_generated_deck(context, selected)
-        interaction_count = int(round(self._coverage_counts(selected).get("role:interaction", 0.0)))
+        interaction_count = int(math.ceil(self._coverage_counts(selected).get("role:interaction", 0.0)))
         commander_entries = [CardEntry(qty=1, name=name, section="commander") for name in context.commander_names]
         land_entries = self._build_mana_base(context, [row.card for row in selected])
         cards = [*commander_entries, *land_entries, *[row.entry for row in selected[:spell_target]]]
@@ -2220,7 +2220,9 @@ class RandomDeckService:
             if errors:
                 last_errors = errors
                 continue
-            if generated.interaction_count < 10:
+            interaction_floor = context.plan.coverage_targets.get("role:interaction", (10.0, 14.0))[0]
+            actual_interaction = float(generated.metrics.get("coverage", {}).get("role:interaction", generated.interaction_count))
+            if actual_interaction < interaction_floor * 0.95:
                 last_errors = [f"Could not satisfy cheap interaction floor for {commander_display_name(context.commander_names)}."]
                 continue
             return {

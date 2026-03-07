@@ -87,7 +87,11 @@ def compile_deck_fingerprint(cards: Sequence[Any], commander_cards: Sequence[Any
         + sum(1 for card in cards if bool(getattr(card, "proliferate", False))) * 0.8,
         "drain": sum(1 for summary in exec_summaries if summary and any(op in summary.executable for op in ("drain_all_opponents", "burn_all_opponents", "burn_single_target"))) * 1.3,
         "mill": sum(1 for summary in exec_summaries if summary and any(op in summary.executable for op in ("mill_all_opponents", "mill_single_target"))) * 1.5,
-        "alt-win": effective_alt_win_count * 4.0 + tag_counts.get("#Protection", 0) * 0.2 + tag_counts.get("#Draw", 0) * 0.1,
+        "alt-win": (
+            effective_alt_win_count * 4.0 + tag_counts.get("#Protection", 0) * 0.2 + tag_counts.get("#Draw", 0) * 0.1
+            if effective_alt_win_count > 0
+            else 0.0
+        ),
     }
     primary_plan = max(plan_scores.items(), key=lambda kv: (kv[1], kv[0]))[0]
     secondary_plan = None
