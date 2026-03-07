@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas.deck import CardEntry
-from app.services.analyzer import analyze
+from app.services.analyzer import _generate_deck_name, analyze
 from app.services.commanderspellbook import ComboIntelService, _normalize_variant
 
 
@@ -175,3 +175,21 @@ def test_combo_intel_endpoint(monkeypatch):
     res = client.post("/api/combos/intel", json={"cards": ["Sol Ring"], "commander": "Urza"})
     assert res.status_code == 200
     assert res.json()["source"] == "commanderspellbook"
+
+
+def test_deck_name_generator_prioritizes_dominant_subtype_theme():
+    cards = [CardEntry(qty=1, name=f"Bird {i}", section="deck", tags=["#CommanderSynergy"]) for i in range(1, 7)]
+    deck_name = _generate_deck_name(
+        cards=cards,
+        commander="Soraya the Falconer",
+        intent={"primary_plan": "Value Midrange", "kill_vectors": ["Combat"]},
+        combo_intel={"matched_variants": []},
+        bracket=2,
+        importance=[],
+        type_profile={
+            "dominant_creature_subtype": {"name": "Bird", "count": 6, "share": 1.0},
+            "deck_theme_tags": ["#BirdTypal"],
+            "primary_deck_theme_tag": "#BirdTypal",
+        },
+    )
+    assert "Bird" in deck_name

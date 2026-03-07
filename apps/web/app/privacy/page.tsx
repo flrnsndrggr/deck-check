@@ -48,13 +48,20 @@ export default function PrivacyPage() {
           <li>Optional ecosystem sources used for recommendations and legality updates.</li>
         </ul>
 
-        <h2>5. Your Rights</h2>
+        <h2>5. Cookies, Local Storage, and Consent</h2>
+        <ul>
+          <li>Deck.Check uses strictly necessary storage for authentication, CSRF protection, security, and core app operation.</li>
+          <li>Optional analytics and marketing categories are disabled unless you grant consent through the site’s privacy choices controls.</li>
+          <li>You can reopen and change those choices at any time from the floating privacy controls.</li>
+        </ul>
+
+        <h2>6. Your Rights</h2>
         <p>
           Depending on your jurisdiction, you may have rights to access, correction, deletion, objection, or portability.
           Contact us at <strong>{contactEmail}</strong>.
         </p>
 
-        <h2>6. Contact</h2>
+        <h2>7. Contact</h2>
         <p>Privacy contact: <strong>{contactEmail}</strong></p>
 
         <div className="legal-actions">

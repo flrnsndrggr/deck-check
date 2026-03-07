@@ -36,6 +36,7 @@ class Settings(BaseModel):
     auth_magic_link_ttl_minutes: int = int(os.getenv("AUTH_MAGIC_LINK_TTL_MINUTES", "30"))
     auth_email_from: str = os.getenv("AUTH_EMAIL_FROM", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
+    admin_emails: str = os.getenv("ADMIN_EMAILS", "florian.sonderegger@me.com")
 
 
 settings = Settings()

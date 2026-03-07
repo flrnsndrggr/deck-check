@@ -235,6 +235,86 @@ def test_validator_accepts_original_partner_pair_with_realistic_oracle_text():
     assert not errors
 
 
+def test_validate_deck_can_infer_low_bracket_from_fair_shell(tmp_path, monkeypatch):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "game_changers.json").write_text('{"cards":[]}')
+    (rules_dir / "banned.json").write_text('{"banned":[],"banned_as_companion":[]}')
+    (rules_dir / "brackets.json").write_text('{"limits":{"1":0,"2":0,"3":2,"4":5,"5":100}}')
+    monkeypatch.setattr("app.services.validator.settings.rules_cache_dir", str(rules_dir))
+
+    cards = [
+        CardEntry(qty=1, name="Commander Card", section="commander", tags=["#CommanderSynergy"]),
+        CardEntry(qty=99, name="Forest", section="deck", tags=["#Land"]),
+    ]
+    card_map = {
+        "Commander Card": {
+            "type_line": "Legendary Creature — Elf Druid",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G"],
+            "oracle_text": "Whenever another creature enters the battlefield under your control, you gain 1 life.",
+        },
+        "Forest": {
+            "type_line": "Basic Land — Forest",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["G"],
+            "oracle_text": "",
+        },
+    }
+    errors, _, report = validate_deck(cards, "Commander Card", card_map, None, tagged_cards=cards)
+    assert not errors
+    assert report["source"] == "inferred"
+    assert report["bracket"] in {1, 2}
+
+
+def test_validate_deck_can_infer_high_bracket_from_fast_combo_shell(tmp_path, monkeypatch):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "game_changers.json").write_text('{"cards":["Mana Crypt","Jeweled Lotus"]}')
+    (rules_dir / "banned.json").write_text('{"banned":[],"banned_as_companion":[]}')
+    (rules_dir / "brackets.json").write_text('{"limits":{"1":0,"2":0,"3":2,"4":5,"5":100}}')
+    monkeypatch.setattr("app.services.validator.settings.rules_cache_dir", str(rules_dir))
+
+    cards = [
+        CardEntry(qty=1, name="Commander Card", section="commander", tags=["#Combo", "#CommanderSynergy"]),
+        CardEntry(qty=1, name="Mana Crypt", section="deck", tags=["#Ramp", "#FastMana"]),
+        CardEntry(qty=1, name="Jeweled Lotus", section="deck", tags=["#Ramp", "#FastMana"]),
+        CardEntry(qty=1, name="Demonic Tutor", section="deck", tags=["#Tutor"]),
+        CardEntry(qty=1, name="Vampiric Tutor", section="deck", tags=["#Tutor"]),
+        CardEntry(qty=1, name="Mystical Tutor", section="deck", tags=["#Tutor"]),
+        CardEntry(qty=1, name="Thassa's Oracle", section="deck", tags=["#Combo", "#Wincon"]),
+        CardEntry(qty=1, name="Demonic Consultation", section="deck", tags=["#Combo", "#Wincon"]),
+        CardEntry(qty=92, name="Island", section="deck", tags=["#Land"]),
+    ]
+    card_map = {
+        "Commander Card": {
+            "type_line": "Legendary Creature — Human Wizard",
+            "legalities": {"commander": "legal"},
+            "color_identity": ["U", "B"],
+            "oracle_text": "Partner",
+        },
+        "Mana Crypt": {"type_line": "Artifact", "legalities": {"commander": "legal"}, "color_identity": [], "oracle_text": "{T}: Add {C}{C}."},
+        "Jeweled Lotus": {"type_line": "Artifact", "legalities": {"commander": "legal"}, "color_identity": [], "oracle_text": "{T}, Sacrifice Jeweled Lotus: Add three mana of any one color. Spend this mana only to cast your commander."},
+        "Demonic Tutor": {"type_line": "Sorcery", "legalities": {"commander": "legal"}, "color_identity": ["B"], "oracle_text": "Search your library for a card, put that card into your hand, then shuffle."},
+        "Vampiric Tutor": {"type_line": "Instant", "legalities": {"commander": "legal"}, "color_identity": ["B"], "oracle_text": "Search your library for a card, then shuffle and put that card on top."},
+        "Mystical Tutor": {"type_line": "Instant", "legalities": {"commander": "legal"}, "color_identity": ["U"], "oracle_text": "Search your library for an instant or sorcery card, reveal it, then shuffle and put that card on top."},
+        "Thassa's Oracle": {"type_line": "Creature — Merfolk Wizard", "legalities": {"commander": "legal"}, "color_identity": ["U"], "oracle_text": "When Thassa's Oracle enters the battlefield, look at the top X cards of your library."},
+        "Demonic Consultation": {"type_line": "Instant", "legalities": {"commander": "legal"}, "color_identity": ["B"], "oracle_text": "Choose a card name. Exile the top six cards of your library, then reveal cards from the top until you reveal the named card."},
+        "Island": {"type_line": "Basic Land — Island", "legalities": {"commander": "legal"}, "color_identity": ["U"], "oracle_text": ""},
+    }
+    errors, _, report = validate_deck(
+        cards,
+        "Commander Card",
+        card_map,
+        None,
+        tagged_cards=cards,
+        sim_summary={"win_metrics": {"median_win_turn": 5}},
+    )
+    assert not errors
+    assert report["source"] == "inferred"
+    assert report["bracket"] >= 4
+
+
 def test_validator_accepts_choose_a_background_pair():
     cards = [
         CardEntry(qty=1, name="Abdel Adrian, Gorion's Ward", section="commander"),

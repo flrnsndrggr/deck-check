@@ -400,7 +400,17 @@ class CardDataService:
             set_bucket = 1
 
         if art_preference == "original":
-            return (0 if regular_modern else 1, -set_bucket, released_at)
+            # "Original Printing" should mean the earliest viable paper printing,
+            # not "the oldest regular modern-looking printing".
+            return (
+                released_at or "9999-12-31",
+                0 if not bool(card.get("promo")) else 1,
+                0 if not showcase_like else 1,
+                -set_bucket,
+                -frame_rank,
+                str(card.get("set") or ""),
+                str(card.get("name") or ""),
+            )
         if art_preference == "classic":
             return (-frame_rank, 0 if not showcase_like else 1, -set_bucket, released_at)
         if art_preference == "showcase":

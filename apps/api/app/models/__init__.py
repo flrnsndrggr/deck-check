@@ -9,3 +9,4 @@ from app.models.data_source import DataSourceStatus
 from app.models.rules_ref import RulesReference
 from app.models.scryfall_cache import ScryfallCard, ScryfallName, ScryfallRuling
 from app.models.ai_enrichment_audit import AIEnrichmentAudit
+from app.models.problem_event import ProblemEvent

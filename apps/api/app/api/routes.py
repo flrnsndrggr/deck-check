@@ -4,9 +4,11 @@ from uuid import uuid4
 from threading import Thread
 from queue import Queue as ThreadQueue, Empty as QueueEmpty
 from datetime import datetime, timezone
+from time import perf_counter
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, select, text, func
 from sqlalchemy.orm import Session
 from rq import Worker
 
@@ -14,10 +16,12 @@ from app.db.session import SessionLocal, get_db
 from app.models.project import Project
 from app.models.project_version import ProjectVersion
 from app.models.password_reset_token import PasswordResetToken
+from app.models.problem_event import ProblemEvent
 from app.models.user import User
 from app.models.data_source import DataSourceStatus
 from app.models.run_record import RunRecord
 from app.models.sim_job import SimJob
+from app.models.auth_session import AuthSession
 from app.schemas.auth import (
     AuthCredentialsRequest,
     PasswordResetConfirmRequest,
@@ -31,6 +35,15 @@ from app.schemas.auth import (
     ProjectVersionListResponse,
     ProjectVersionResponse,
     ProjectVersionSummary,
+)
+from app.schemas.admin import (
+    AdminProblemEntry,
+    AdminProblemsResponse,
+    AdminSystemCheck,
+    AdminSystemsResponse,
+    AdminUserResponse,
+    AdminUsersResponse,
+    AdminUserUpdateRequest,
 )
 from app.schemas.deck import (
     AnalyzeRequest,
@@ -61,12 +74,14 @@ from app.services.auth import (
     create_session,
     create_password_reset_token,
     get_session_context,
+    is_admin_user,
     get_valid_password_reset_token,
     hash_password,
     normalize_email,
     normalize_project_name_key,
     record_auth_failure,
     record_reset_request,
+    require_admin_context,
     require_csrf,
     reset_rate_limited,
     revoke_user_sessions,
@@ -83,6 +98,7 @@ from app.services.guides import generate_guides
 from app.services.mail import send_password_reset_email
 from app.services.ai_enrichment import AIEnrichmentService
 from app.services.importer import UrlImportError, import_decklist_from_url
+from app.services.problem_log import build_problem_copy_blob
 from app.services.parser import parse_decklist
 from app.services.rules_index import search_rules
 from app.services.scryfall import CardDataService
@@ -130,6 +146,57 @@ def _project_version_summary(row: ProjectVersion) -> ProjectVersionSummary:
         bracket=row.bracket,
         summary=row.summary or {},
         created_at=row.created_at,
+    )
+
+
+def _admin_problem_entry(row: ProblemEvent) -> AdminProblemEntry:
+    return AdminProblemEntry(
+        id=row.id,
+        level=row.level,
+        source=row.source,
+        category=row.category,
+        message=row.message,
+        detail=row.detail,
+        path=row.path,
+        request_id=row.request_id,
+        user_id=row.user_id,
+        user_email=row.user_email,
+        context=row.context or {},
+        created_at=row.created_at,
+        copy_blob=build_problem_copy_blob(row),
+    )
+
+
+def _admin_user_summary(db: Session, row: User) -> AdminUserResponse:
+    project_count = int(db.execute(select(func.count(Project.id)).where(Project.user_id == row.id)).scalar() or 0)
+    version_count = int(
+        db.execute(
+            select(func.count(ProjectVersion.id))
+            .select_from(ProjectVersion)
+            .join(Project, Project.id == ProjectVersion.project_id)
+            .where(Project.user_id == row.id)
+        ).scalar() or 0
+    )
+    active_session_count = int(
+        db.execute(
+            select(func.count(AuthSession.id))
+            .where(AuthSession.user_id == row.id, AuthSession.expires_at >= datetime.now(timezone.utc))
+        ).scalar() or 0
+    )
+    return AdminUserResponse(
+        id=row.id,
+        email=row.email,
+        role=row.role,
+        status=row.status,
+        plan=row.plan,
+        admin_notes=row.admin_notes,
+        is_protected_admin=is_admin_user(row),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        last_login_at=row.last_login_at,
+        project_count=project_count,
+        version_count=version_count,
+        active_session_count=active_session_count,
     )
 
 
@@ -206,6 +273,40 @@ def _has_live_workers(max_stale_seconds: int = 120) -> bool:
     return False
 
 
+def _timed_check(label: str, key: str, fn):
+    started = perf_counter()
+    try:
+        result = fn()
+        latency_ms = int((perf_counter() - started) * 1000)
+        if isinstance(result, dict):
+            return AdminSystemCheck(
+                key=key,
+                label=label,
+                status=str(result.get("status") or "ok"),
+                message=str(result.get("message") or "OK"),
+                latency_ms=latency_ms,
+                detail=result.get("detail"),
+                meta=result.get("meta") or {},
+            )
+        return AdminSystemCheck(key=key, label=label, status="ok", message="OK", latency_ms=latency_ms)
+    except Exception as exc:
+        latency_ms = int((perf_counter() - started) * 1000)
+        return AdminSystemCheck(
+            key=key,
+            label=label,
+            status="error",
+            message=f"{type(exc).__name__}: {exc}",
+            latency_ms=latency_ms,
+        )
+
+
+def _http_probe(url: str, *, headers: dict | None = None, params: dict | None = None):
+    with httpx.Client(timeout=4.0, follow_redirects=True) as client:
+        response = client.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        return response
+
+
 @router.get("/auth/session", response_model=AuthSessionResponse)
 def get_auth_session(request: Request, db: Session = Depends(get_db)):
     ctx = get_session_context(db, request, allow_missing=True)
@@ -229,7 +330,7 @@ def register_auth(req: AuthCredentialsRequest, request: Request, response: Respo
     set_session_cookie(response, raw_token)
     return AuthSessionResponse(
         authenticated=True,
-        user={"id": user.id, "email": user.email},
+        user={"id": user.id, "email": user.email, "is_admin": is_admin_user(user), "role": user.role, "status": user.status, "plan": user.plan},
         csrf_token=session_row.csrf_token,
     )
 
@@ -243,6 +344,8 @@ def login_auth(req: AuthCredentialsRequest, request: Request, response: Response
     if user is None or not verify_password(req.password, user.password_hash):
         record_auth_failure(email, request.client.host if request.client else None)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if str(user.status or "active").strip().lower() != "active":
+        raise HTTPException(status_code=403, detail="Account is not active.")
     clear_auth_failures(email, request.client.host if request.client else None)
     user.last_login_at = datetime.now(timezone.utc)
     session_row, raw_token = create_session(db, user, request)
@@ -250,7 +353,7 @@ def login_auth(req: AuthCredentialsRequest, request: Request, response: Response
     set_session_cookie(response, raw_token)
     return AuthSessionResponse(
         authenticated=True,
-        user={"id": user.id, "email": user.email},
+        user={"id": user.id, "email": user.email, "is_admin": is_admin_user(user), "role": user.role, "status": user.status, "plan": user.plan},
         csrf_token=session_row.csrf_token,
     )
 
@@ -314,7 +417,7 @@ def confirm_password_reset(req: PasswordResetConfirmRequest, request: Request, r
     set_session_cookie(response, raw_token)
     return AuthSessionResponse(
         authenticated=True,
-        user={"id": user.id, "email": user.email},
+        user={"id": user.id, "email": user.email, "is_admin": is_admin_user(user), "role": user.role, "status": user.status, "plan": user.plan},
         csrf_token=session_row.csrf_token,
     )
 
@@ -457,7 +560,7 @@ def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
     parsed = parse_decklist(req.decklist_text)
     names = [c.name for c in parsed.cards]
     card_map = CardDataService().get_cards_by_name(names)
-    v_errors, v_warnings, _ = validate_deck(parsed.cards, parsed.commander, card_map, req.bracket)
+    v_errors, v_warnings, bracket_report = validate_deck(parsed.cards, parsed.commander, card_map, req.bracket)
     parsed.errors.extend(v_errors)
     parsed.warnings.extend(v_warnings)
     commander_names = commander_names_from_cards(parsed.cards, fallback_commander=parsed.commander)
@@ -466,6 +569,7 @@ def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
     commander_colors = combined_color_identity(card_map, commander_names)
     parsed.color_identity = commander_colors
     parsed.color_identity_size = len(commander_colors)
+    parsed.bracket_report = bracket_report
     return parsed
 
 
@@ -475,6 +579,7 @@ def tag_deck(req: TagRequest):
     card_map = svc.get_cards_by_name([c.name for c in req.cards])
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
     cards, archetypes, lines = tag_cards(req.cards, card_map, commander_names, use_global_prefix=req.global_tags)
+    _, _, bracket_report = validate_deck(cards, req.commander, card_map, None, tagged_cards=cards)
     type_profile = compute_type_theme_profile(req.cards, card_map)
     display = svc.get_display_by_names([c.name for c in req.cards], art_preference=req.art_preference)
     commander_colors = combined_color_identity(card_map, commander_names)
@@ -486,6 +591,7 @@ def tag_deck(req: TagRequest):
         card_display=display,
         color_identity=commander_colors,
         color_identity_size=len(commander_colors),
+        bracket_report=bracket_report,
     )
 
 
@@ -505,6 +611,11 @@ def run_sim(req: SimRunRequest):
     lookup_names.extend(commander_names)
     card_map = CardDataService().get_cards_by_name(lookup_names)
     commander_colors = combined_color_identity(card_map, commander_names)
+    effective_bracket = req.bracket
+    if effective_bracket is None:
+        _, _, inferred_report = validate_deck(req.cards, req.commander, card_map, None, tagged_cards=req.cards)
+        effective_bracket = int(inferred_report.get("bracket", 3) or 3)
+    payload["bracket"] = effective_bracket
     payload["color_identity"] = commander_colors
     payload["color_identity_size"] = len(commander_colors) if commander_names else 3
     payload["commanders"] = commander_names
@@ -573,7 +684,7 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
     commander_colors = combined_color_identity(card_map, commander_names)
     commander_ci = "".join(commander_colors)
-    _, _, bracket_report = validate_deck(req.cards, req.commander, card_map, req.bracket)
+    _, _, bracket_report = validate_deck(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
     primary_commander = primary_commander_name(commander_names) or req.commander
     commander_display = commander_display_name(commander_names) or req.commander
     combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
@@ -657,9 +768,118 @@ def rules_search(q: str, db: Session = Depends(get_db)):
 
 
 @router.post("/admin/update-data")
-def admin_update_data(db: Session = Depends(get_db)):
+def admin_update_data(request: Request, db: Session = Depends(get_db)):
+    ctx = require_admin_context(db, request)
+    require_csrf(request, ctx)
     update_all_data(db)
     return {"ok": True}
+
+
+@router.get("/admin/problems", response_model=AdminProblemsResponse)
+def admin_problem_feed(request: Request, limit: int = 100, db: Session = Depends(get_db)):
+    require_admin_context(db, request)
+    capped = max(1, min(int(limit or 100), 500))
+    rows = db.execute(select(ProblemEvent).order_by(desc(ProblemEvent.created_at), desc(ProblemEvent.id)).limit(capped)).scalars().all()
+    return AdminProblemsResponse(problems=[_admin_problem_entry(row) for row in rows])
+
+
+@router.get("/admin/systems", response_model=AdminSystemsResponse)
+def admin_systems(request: Request, db: Session = Depends(get_db)):
+    require_admin_context(db, request)
+
+    checks = [
+        _timed_check(
+            "Database",
+            "database",
+            lambda: (db.execute(text("SELECT 1")).scalar() and {"status": "ok", "message": "Connected"}),
+        ),
+        _timed_check(
+            "Redis",
+            "redis",
+            lambda: (_run_with_timeout(lambda: bool(redis_conn.ping()), timeout_s=1.5) and {"status": "ok", "message": "Connected"}),
+        ),
+        _timed_check(
+            "RQ Worker",
+            "worker",
+            lambda: {"status": "ok", "message": "Worker online", "meta": {"queue_depth": int(_run_with_timeout(lambda: int(sim_queue.count), timeout_s=1.5))}}
+            if _has_live_workers()
+            else {"status": "warn", "message": "No live worker heartbeat detected"},
+        ),
+        _timed_check(
+            "Simulation backend",
+            "simulation_backend",
+            lambda: {"status": "ok", "message": "Vectorized backend available", "meta": get_vector_backend_status()}
+            if get_vector_backend_status().get("vectorized_available")
+            else {"status": "warn", "message": "Vectorized backend unavailable", "detail": get_vector_backend_status().get("vectorized_import_error")},
+        ),
+        _timed_check(
+            "OpenAI",
+            "openai",
+            lambda: {"status": "warn", "message": "AI disabled"} if not settings.ai_enabled else (
+                {"status": "warn", "message": "Missing API key"} if not settings.openai_api_key else (
+                    _http_probe(
+                        f"https://api.openai.com/v1/models/{settings.openai_model}",
+                        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    )
+                    and {"status": "ok", "message": f"{settings.openai_model} reachable"}
+                )
+            ),
+        ),
+        _timed_check(
+            "Scryfall",
+            "scryfall",
+            lambda: (_http_probe("https://api.scryfall.com/cards/named", params={"exact": "Sol Ring"}) and {"status": "ok", "message": "Card API reachable"}),
+        ),
+        _timed_check(
+            "Commander Spellbook",
+            "commanderspellbook",
+            lambda: (_http_probe("https://backend.commanderspellbook.com/variants/", params={"limit": 1}) and {"status": "ok", "message": "Variants API reachable"}),
+        ),
+        _timed_check(
+            "Resend",
+            "resend",
+            lambda: {"status": "warn", "message": "Missing API key"} if not settings.resend_api_key else (
+                _http_probe("https://api.resend.com/domains", headers={"Authorization": f"Bearer {settings.resend_api_key}"})
+                and {"status": "ok", "message": "Mail API reachable"}
+            ),
+        ),
+    ]
+    ok = all(check.status == "ok" for check in checks if check.key in {"database", "redis"})
+    return AdminSystemsResponse(ok=ok, checks=checks, checked_at=datetime.now(timezone.utc))
+
+
+@router.get("/admin/users", response_model=AdminUsersResponse)
+def admin_users(request: Request, db: Session = Depends(get_db)):
+    require_admin_context(db, request)
+    rows = db.execute(select(User).order_by(User.created_at.desc(), User.id.desc())).scalars().all()
+    return AdminUsersResponse(users=[_admin_user_summary(db, row) for row in rows])
+
+
+@router.patch("/admin/users/{user_id}", response_model=AdminUserResponse)
+def admin_update_user(user_id: int, req: AdminUserUpdateRequest, request: Request, db: Session = Depends(get_db)):
+    ctx = require_admin_context(db, request)
+    require_csrf(request, ctx)
+    row = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    next_status = None
+    if req.role is not None:
+        row.role = str(req.role or "user").strip().lower()[:32] or "user"
+    if req.plan is not None:
+        row.plan = str(req.plan or "free").strip().lower()[:32] or "free"
+    if req.status is not None:
+        next_status = str(req.status or "active").strip().lower()[:32] or "active"
+        if is_admin_user(row) and next_status != "active":
+            raise HTTPException(status_code=400, detail="Protected admin account must remain active.")
+        row.status = next_status
+    if req.admin_notes is not None:
+        row.admin_notes = str(req.admin_notes or "").strip()[:4000] or None
+    if next_status is not None and next_status != "active":
+        for session_row in db.execute(select(AuthSession).where(AuthSession.user_id == row.id)).scalars().all():
+            db.delete(session_row)
+    db.commit()
+    db.refresh(row)
+    return _admin_user_summary(db, row)
 
 
 @router.get("/meta/updates")

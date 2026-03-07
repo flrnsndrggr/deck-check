@@ -1,6 +1,8 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
+import ConsentManager from "./consent-manager";
+import { CONSENT_INIT_SCRIPT } from "./consent";
 import { THEME_INIT_SCRIPT } from "./theme";
 
 const fontUi = Instrument_Sans({
@@ -32,7 +34,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" data-theme="dark" data-theme-mode="system" suppressHydrationWarning>
       <body className={`${fontUi.variable} ${fontMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: CONSENT_INIT_SCRIPT }} />
         {children}
+        <ConsentManager />
       </body>
     </html>
   );

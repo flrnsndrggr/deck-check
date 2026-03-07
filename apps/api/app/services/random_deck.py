@@ -6,7 +6,12 @@ from collections import Counter
 from typing import Dict, List, Sequence, Tuple
 
 from app.schemas.deck import CardEntry
-from app.services.commander_utils import combined_color_identity
+from app.services.commander_utils import (
+    combined_color_identity,
+    commander_display_name,
+    has_choose_a_background,
+    partner_mode,
+)
 from app.services.scryfall import CardDataService
 from app.services.tagger import intrinsic_tags
 from app.services.validator import validate_deck
@@ -93,9 +98,9 @@ def _is_fog(card: Dict) -> bool:
     return "prevent all combat damage" in txt or "prevent all damage that would be dealt by attacking" in txt
 
 
-def _count_pips(cards: Sequence[Dict], commander_card: Dict, colors: Sequence[str]) -> Counter:
+def _count_pips(cards: Sequence[Dict], commander_cards: Sequence[Dict], colors: Sequence[str]) -> Counter:
     counts: Counter = Counter({color: 1 for color in colors})
-    mana_texts = [str(commander_card.get("mana_cost") or "")]
+    mana_texts = [str(card.get("mana_cost") or "") for card in commander_cards]
     mana_texts.extend(str(card.get("mana_cost") or "") for card in cards)
     for mana_cost in mana_texts:
         for color in colors:
@@ -112,15 +117,17 @@ class RandomDeckService:
         query = "game:paper legal:commander t:legendary t:creature -is:funny"
         return self.card_service.fetch_random_card(query)
 
-    def _commander_profile(self, commander: Dict) -> Dict[str, object]:
-        text = _text(commander)
-        type_line = str(commander.get("type_line") or "").lower()
-        subtype_text = type_line.split("—", 1)[1] if "—" in type_line else type_line.split("-", 1)[1] if "-" in type_line else ""
-        subtypes = {
-            token.strip()
-            for token in re.split(r"\s+", subtype_text)
-            if token.strip() and token.strip() not in {"human"}
-        }
+    def _commander_profile(self, commander_cards: Sequence[Dict]) -> Dict[str, object]:
+        text = " ".join(_text(card) for card in commander_cards)
+        subtypes = set()
+        for commander in commander_cards:
+            type_line = str(commander.get("type_line") or "").lower()
+            subtype_text = type_line.split("—", 1)[1] if "—" in type_line else type_line.split("-", 1)[1] if "-" in type_line else ""
+            subtypes.update(
+                token.strip()
+                for token in re.split(r"\s+", subtype_text)
+                if token.strip() and token.strip() not in {"human"}
+            )
         themes = {theme for theme, patterns in THEME_PATTERNS.items() if any(pattern in text for pattern in patterns)}
         return {
             "text": text,
@@ -128,6 +135,46 @@ class RandomDeckService:
             "subtypes": subtypes,
             "themes": themes,
         }
+
+    def _fetch_named_card(self, name: str) -> Dict | None:
+        target = str(name or "").strip()
+        if not target:
+            return None
+        candidates = [target]
+        titled = " ".join(part.capitalize() for part in target.split())
+        if titled not in candidates:
+            candidates.append(titled)
+        fetched = self.card_service.get_cards_by_name(candidates)
+        for candidate in candidates:
+            if fetched.get(candidate):
+                return fetched[candidate]
+        return next(iter(fetched.values()), None)
+
+    def _random_partner_commander(self, primary_name: str) -> Dict | None:
+        query = 'game:paper legal:commander t:legendary t:creature o:"Partner" -o:"Partner with" -is:funny'
+        primary_key = str(primary_name or "").strip().lower()
+        for _ in range(10):
+            candidate = self.card_service.fetch_random_card(query)
+            if str(candidate.get("name") or "").strip().lower() != primary_key:
+                return candidate
+        return None
+
+    def _random_background(self) -> Dict | None:
+        query = 'game:paper legal:commander t:background -is:funny'
+        try:
+            return self.card_service.fetch_random_card(query)
+        except Exception:
+            return None
+
+    def _secondary_commander(self, primary_commander: Dict) -> Dict | None:
+        mode, value = partner_mode(primary_commander)
+        if mode == "partner_with" and value:
+            return self._fetch_named_card(value)
+        if mode == "partner":
+            return self._random_partner_commander(str(primary_commander.get("name") or ""))
+        if has_choose_a_background(primary_commander):
+            return self._random_background()
+        return None
 
     def _entry_with_tags(self, card: Dict) -> CardEntry:
         entry = CardEntry(qty=1, name=str(card.get("name") or ""), section="deck")
@@ -262,13 +309,13 @@ class RandomDeckService:
             return COLORLESS_NONBASIC_LANDS[:8]
         return GENERIC_NONBASIC_LANDS[:8]
 
-    def _basic_land_entries(self, colors: Sequence[str], selected_nonlands: Sequence[Dict], commander_card: Dict, total_basics: int) -> List[CardEntry]:
+    def _basic_land_entries(self, colors: Sequence[str], selected_nonlands: Sequence[Dict], commander_cards: Sequence[Dict], total_basics: int) -> List[CardEntry]:
         if total_basics <= 0:
             return []
         if not colors:
             return [CardEntry(qty=total_basics, name="Wastes", section="deck")]
 
-        pip_counts = _count_pips(selected_nonlands, commander_card, colors)
+        pip_counts = _count_pips(selected_nonlands, commander_cards, colors)
         total_weight = sum(max(1, pip_counts[color]) for color in colors)
         allocations = {color: max(1, round(total_basics * max(1, pip_counts[color]) / total_weight)) for color in colors}
         current_total = sum(allocations.values())
@@ -285,11 +332,12 @@ class RandomDeckService:
                     current_total += 1
         return [CardEntry(qty=allocations[color], name=COLOR_TO_BASIC[color], section="deck") for color in colors if allocations[color] > 0]
 
-    def _build_deck_entries(self, commander_card: Dict) -> tuple[List[CardEntry], Dict[str, Dict], int]:
-        commander_name = str(commander_card.get("name") or "")
-        commander_colors = combined_color_identity({commander_name: commander_card}, [commander_name])
+    def _build_deck_entries(self, commander_cards: Sequence[Dict]) -> tuple[List[CardEntry], Dict[str, Dict], int]:
+        commander_names = [str(card.get("name") or "").strip() for card in commander_cards if str(card.get("name") or "").strip()]
+        card_map: Dict[str, Dict] = {name: card for name, card in zip(commander_names, commander_cards)}
+        commander_colors = combined_color_identity(card_map, commander_names)
         color_identity = "".join(commander_colors)
-        profile = self._commander_profile(commander_card)
+        profile = self._commander_profile(commander_cards)
 
         pools = {
             "interaction": self.card_service.search_candidates('mv<=2 ((t:instant) or o:"prevent all combat damage" or o:"flash") -t:land', color_identity, limit=120),
@@ -298,12 +346,11 @@ class RandomDeckService:
             "synergy": self.card_service.search_candidates("-t:land", color_identity, limit=220),
         }
 
-        card_map: Dict[str, Dict] = {commander_name: commander_card}
         entry_map: Dict[str, CardEntry] = {}
         for pool in pools.values():
             for card in pool:
                 name = str(card.get("name") or "").strip()
-                if not name or name == commander_name:
+                if not name or name in commander_names:
                     continue
                 card_map[name] = card
                 if name not in entry_map:
@@ -324,17 +371,18 @@ class RandomDeckService:
         chosen_spells.extend(interaction_picks)
         chosen_spells.extend(self._pick_ranked([row for row in ramp_ranked if row[0] > -900], ramp_target, selected_names))
         chosen_spells.extend(self._pick_ranked([row for row in draw_ranked if row[0] > -900], draw_target, selected_names))
-        remaining_spell_slots = 61 - len(chosen_spells)
+        spell_slot_target = 100 - 38 - len(commander_names)
+        remaining_spell_slots = spell_slot_target - len(chosen_spells)
         chosen_spells.extend(self._pick_ranked([row for row in synergy_ranked if row[0] > -900], remaining_spell_slots, selected_names, window=6))
 
-        if len(chosen_spells) < 61:
+        if len(chosen_spells) < spell_slot_target:
             fallback_ranked = sorted(
                 [row for row in synergy_ranked if row[1].name not in selected_names],
                 key=lambda row: row[0],
                 reverse=True,
             )
             for _, entry, _ in fallback_ranked:
-                if len(chosen_spells) >= 61:
+                if len(chosen_spells) >= spell_slot_target:
                     break
                 chosen_spells.append(entry)
                 selected_names.add(entry.name)
@@ -342,10 +390,10 @@ class RandomDeckService:
         chosen_cards = [card_map[entry.name] for entry in chosen_spells]
         nonbasic_names = self._nonbasic_land_names(commander_colors)
         nonbasic_land_entries = [CardEntry(qty=1, name=name, section="deck") for name in nonbasic_names]
-        basic_land_entries = self._basic_land_entries(commander_colors, chosen_cards, commander_card, total_basics=38 - len(nonbasic_land_entries))
+        basic_land_entries = self._basic_land_entries(commander_colors, chosen_cards, commander_cards, total_basics=38 - len(nonbasic_land_entries))
 
-        commander_entry = CardEntry(qty=1, name=commander_name, section="commander")
-        return [commander_entry, *nonbasic_land_entries, *basic_land_entries, *chosen_spells[:61]], card_map, len(interaction_picks)
+        commander_entries = [CardEntry(qty=1, name=name, section="commander") for name in commander_names]
+        return [*commander_entries, *nonbasic_land_entries, *basic_land_entries, *chosen_spells[:spell_slot_target]], card_map, len(interaction_picks)
 
     def _to_decklist_text(self, cards: Sequence[CardEntry]) -> str:
         commander_lines = [f"{entry.qty} {entry.name}" for entry in cards if entry.section == "commander"]
@@ -363,19 +411,22 @@ class RandomDeckService:
         last_errors: List[str] = []
         for _ in range(8):
             commander_card = self._random_commander()
-            cards, card_map, interaction_count = self._build_deck_entries(commander_card)
+            secondary = self._secondary_commander(commander_card)
+            commander_cards = [commander_card, secondary] if secondary else [commander_card]
+            cards, card_map, interaction_count = self._build_deck_entries(commander_cards)
             if interaction_count < 10:
                 last_errors = [f"Could not find enough cheap interaction for {commander_card.get('name') or 'selected commander'}."]
                 continue
             names = [entry.name for entry in cards]
             fetched_map = self.card_service.get_cards_by_name(names)
             card_map.update(fetched_map)
-            commander_names = [cards[0].name]
-            errors, warnings, _ = validate_deck(cards, commander_names[0], card_map, bracket)
+            commander_names = [entry.name for entry in cards if entry.section == "commander"]
+            errors, warnings, _ = validate_deck(cards, commander_display_name(commander_names), card_map, bracket)
             if not errors:
                 return {
                     "decklist_text": self._to_decklist_text(cards),
-                    "commander": commander_names[0],
+                    "commander": commander_display_name(commander_names) or commander_names[0],
+                    "commanders": commander_names,
                     "color_identity": combined_color_identity(card_map, commander_names),
                     "interaction_count": interaction_count,
                     "warnings": warnings,

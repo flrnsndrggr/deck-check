@@ -7,7 +7,7 @@ ArtPreference = Literal["original", "classic", "clean", "showcase", "newest"]
 
 class DeckParseRequest(BaseModel):
     decklist_text: str
-    bracket: int = Field(default=3, ge=1, le=5)
+    bracket: int | None = Field(default=None, ge=1, le=5)
     multiplayer: bool = True
 
 
@@ -28,6 +28,7 @@ class RandomDeckRequest(BaseModel):
 class RandomDeckResponse(BaseModel):
     decklist_text: str
     commander: str
+    commanders: List[str] = Field(default_factory=list)
     color_identity: List[str] = Field(default_factory=list)
     interaction_count: int = 0
     warnings: List[str] = Field(default_factory=list)
@@ -48,6 +49,7 @@ class DeckParseResponse(BaseModel):
     companion: Optional[str] = None
     color_identity: List[str] = Field(default_factory=list)
     color_identity_size: int = 0
+    bracket_report: Dict = Field(default_factory=dict)
     cards: List[CardEntry]
     errors: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
@@ -69,13 +71,14 @@ class TagResponse(BaseModel):
     card_display: Dict[str, Dict] = Field(default_factory=dict)
     color_identity: List[str] = Field(default_factory=list)
     color_identity_size: int = 0
+    bracket_report: Dict = Field(default_factory=dict)
 
 
 class AnalyzeRequest(BaseModel):
     cards: List[CardEntry]
     commander: Optional[str] = None
     commanders: List[str] = Field(default_factory=list)
-    bracket: int = Field(default=3, ge=1, le=5)
+    bracket: int | None = Field(default=None, ge=1, le=5)
     template: str = "balanced"
     budget_max_usd: Optional[float] = Field(default=None, ge=0)
     sim_summary: Dict = Field(default_factory=dict)
@@ -188,7 +191,7 @@ class SimRunRequest(BaseModel):
     runs: int = Field(default=1000, ge=10, le=100000)
     turn_limit: int = Field(default=8, ge=3, le=20)
     policy: str = "auto"
-    bracket: int = Field(default=3, ge=1, le=5)
+    bracket: int | None = Field(default=None, ge=1, le=5)
     multiplayer: bool = True
     threat_model: bool = False
     primary_wincons: List[str] = Field(default_factory=list)

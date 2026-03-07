@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   LineChart,
   Line,
@@ -16,7 +16,7 @@ import {
   Legend,
 } from "recharts";
 import ReactMarkdown from "react-markdown";
-import { THEME_STORAGE_KEY, chartTheme, isThemeMode, resolveTheme, type ResolvedTheme, type ThemeMode } from "./theme";
+import { chartTheme, resolveTheme, type ResolvedTheme } from "./theme";
 
 const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const DEFAULT_API_BASE = "https://deck-check.onrender.com";
@@ -64,7 +64,6 @@ const TABS = [
 ] as const;
 const TAG_ONLY_TABS = ["Role Breakdown", "Combos", "Rules Watchouts"] as const;
 
-const THEME_OPTIONS: ThemeMode[] = ["dark", "light", "system"];
 const ART_PREFERENCE_OPTIONS = [
   {
     value: "original",
@@ -130,6 +129,10 @@ function decklistStatusMeta(
     done: { percent: 100, label: "Deck preview ready", detail: "Decklist parsing, tagging, and preview rendering are complete.", show: false },
     failed: { percent: 100, label: "Deck prep failed", detail: "The decklist could not be fully parsed and tagged.", show: false, tone: "error" },
   };
+  if (trimmed === "generating") {
+    const row = mapped.generating;
+    return { show: true, percent: row.percent, label: row.label, detail: row.detail, tone: row.tone };
+  }
   if (previewReady && trimmed !== "failed") {
     return {
       show: true,
@@ -563,6 +566,7 @@ export default function HomePage() {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [detectedWincons, setDetectedWincons] = useState<string[]>([]);
   const [status, setStatus] = useState("idle");
+  const [activeAction, setActiveAction] = useState<"none" | "random" | "tag" | "analysis">("none");
 
   const [parseRes, setParseRes] = useState<any>(null);
   const [tagRes, setTagRes] = useState<any>(null);
@@ -576,7 +580,7 @@ export default function HomePage() {
   const [selectedCurveMv, setSelectedCurveMv] = useState<number | null>(null);
   const [decklistPanelView, setDecklistPanelView] = useState<"Decklist" | "Tagged Decklist">("Decklist");
   const [mobilePane, setMobilePane] = useState<"controls" | "deck" | "views">("controls");
-  const [authUser, setAuthUser] = useState<{ id: number; email: string } | null>(null);
+  const [authUser, setAuthUser] = useState<{ id: number; email: string; is_admin?: boolean; role?: string; status?: string; plan?: string } | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -595,14 +599,14 @@ export default function HomePage() {
   const [resetToken, setResetToken] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
-  const [updatesMeta, setUpdatesMeta] = useState<any>(null);
   const [integrationsMeta, setIntegrationsMeta] = useState<any>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountTab, setAccountTab] = useState<"login" | "register" | "recover" | "library" | "security">("login");
   const [strictlyBetter, setStrictlyBetter] = useState<any[]>([]);
   const [strictlyBetterLoading, setStrictlyBetterLoading] = useState(false);
   const [expandedRoles, setExpandedRoles] = useState<Record<string, boolean>>({});
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [visibleCharts, setVisibleCharts] = useState<Record<string, boolean>>({});
-  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
   const chartObserverRef = useRef<IntersectionObserver | null>(null);
   const chartElementsRef = useRef<Record<string, HTMLDivElement | null>>({});
@@ -612,19 +616,18 @@ export default function HomePage() {
 
   const detailOpen = true;
 
-  function applyThemeMode(nextMode: ThemeMode, mediaOverride?: MediaQueryList | null) {
+  function applySystemTheme(mediaOverride?: MediaQueryList | null) {
     const media =
       mediaOverride ??
       (typeof window !== "undefined" && typeof window.matchMedia === "function"
         ? window.matchMedia("(prefers-color-scheme: dark)")
         : null);
-    const nextResolved = resolveTheme(nextMode, Boolean(media?.matches));
+    const nextResolved = resolveTheme("system", Boolean(media?.matches));
     if (typeof document !== "undefined") {
       document.documentElement.dataset.theme = nextResolved;
-      document.documentElement.dataset.themeMode = nextMode;
+      document.documentElement.dataset.themeMode = "system";
       document.documentElement.style.colorScheme = nextResolved;
     }
-    setThemeMode(nextMode);
     setResolvedTheme(nextResolved);
   }
 
@@ -762,11 +765,24 @@ export default function HomePage() {
   const typeThemeProfile = analysis?.type_theme_profile || tagRes?.type_theme_profile || {};
   const colorIdentity = colorProfile?.color_identity || parseRes?.color_identity || tagRes?.color_identity || [];
   const colorIdentitySize = Number(colorProfile?.color_identity_size ?? parseRes?.color_identity_size ?? tagRes?.color_identity_size ?? 0);
+  const currentBracketReport = analysis?.bracket_report || tagRes?.bracket_report || parseRes?.bracket_report || null;
+  const currentBracketValue = Number(currentBracketReport?.bracket ?? bracket ?? 3);
+  const currentBracketName = String(currentBracketReport?.bracket_name || "");
   const decklistProgressMeta = useMemo(
     () => decklistStatusMeta(status, Boolean(tagRes?.cards?.length)),
     [status, tagRes],
   );
   const analysisProgressMeta = useMemo(() => analysisStatusMeta(status), [status]);
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  const randomDeckButtonProgress = activeAction === "random" && normalizedStatus === "generating" ? decklistProgressMeta.percent : 0;
+  const tagDeckButtonProgress = activeAction === "tag" && ["parsing", "tagging"].includes(normalizedStatus) ? decklistProgressMeta.percent : 0;
+  const fullAnalysisButtonProgress = activeAction === "analysis"
+    ? (
+        analysisProgressMeta.show
+          ? analysisProgressMeta.percent
+          : (["parsing", "tagging"].includes(normalizedStatus) ? Math.max(8, Math.round(decklistProgressMeta.percent * 0.18)) : 0)
+      )
+    : 0;
   const rulesWatchoutRows = useMemo(() => {
     return ((analysis?.rules_watchouts || rulesWatchoutsRes || []) as any[])
       .map((w: any) => {
@@ -802,7 +818,7 @@ export default function HomePage() {
   }, [analysis, rulesWatchoutsRes]);
   const currentSettingsBundle = useMemo(
     () => ({
-      bracket,
+      bracket: currentBracketValue,
       policy,
       simRuns,
       turnLimit,
@@ -813,11 +829,7 @@ export default function HomePage() {
       artPreference,
       showAdvancedSettings,
     }),
-    [bracket, policy, simRuns, turnLimit, tablePressure, mulliganAggression, commanderPriority, budgetMaxUsd, artPreference, showAdvancedSettings],
-  );
-  const selectedArtPreference = useMemo(
-    () => ART_PREFERENCE_OPTIONS.find((option) => option.value === artPreference) || ART_PREFERENCE_OPTIONS[2],
-    [artPreference],
+    [currentBracketValue, policy, simRuns, turnLimit, tablePressure, mulliganAggression, commanderPriority, budgetMaxUsd, artPreference, showAdvancedSettings],
   );
   const currentProjectSummary = useMemo(() => {
     const legalityLabel =
@@ -834,6 +846,7 @@ export default function HomePage() {
       card_count: parsedCount,
       auto_win_plans: detectedWincons,
       color_identity: colorIdentity,
+      bracket: currentBracketValue,
       has_analysis: Boolean(analysis || simRes || guides),
       legality: legalityLabel,
       latest_status: status,
@@ -846,6 +859,7 @@ export default function HomePage() {
     analysis,
     comboRes,
     commanderLabel,
+    currentBracketValue,
     detectedWincons,
     colorIdentity,
     guides,
@@ -879,11 +893,11 @@ export default function HomePage() {
       deck_name: analysis?.deck_name || derivedName,
       commander_label: commanderLabel,
       decklist_text: decklist,
-      bracket,
+      bracket: currentBracketValue,
       summary: currentProjectSummary,
       saved_bundle: currentSavedBundle,
     };
-  }, [analysis?.deck_name, bracket, commanderLabel, currentProjectSummary, currentSavedBundle, decklist, projectName]);
+  }, [analysis?.deck_name, commanderLabel, currentBracketValue, currentProjectSummary, currentSavedBundle, decklist, projectName]);
   const currentProjectSignature = useMemo(() => JSON.stringify(currentProjectSnapshot), [currentProjectSnapshot]);
   const hasMeaningfulDeckState = useMemo(
     () =>
@@ -949,7 +963,7 @@ export default function HomePage() {
     if (num(simRes?.summary?.failure_modes?.mana_screw) > 0.22) out.push("Mana screw appears frequently; review land count and source balance.");
     if (num(simRes?.summary?.failure_modes?.no_action) > 0.28) out.push("Too many openers do nothing early; shift curve lower or add setup.");
     if ((analysis?.missing_roles || []).length > 0) out.push(`Role gaps detected: ${(analysis?.missing_roles || []).slice(0, 3).map((g: any) => g.role).join(", ")}.`);
-    if (!out.length) out.push("Core goldfish metrics look stable for the chosen policy and bracket.");
+    if (!out.length) out.push("Core goldfish metrics look stable for the current policy and inferred bracket.");
     return out;
   }, [simRes, analysis]);
 
@@ -1800,6 +1814,7 @@ export default function HomePage() {
 
   async function generateRandomDeck() {
     try {
+      setActiveAction("random");
       updateStatus("generating");
       setUrlImportNotice(null);
       const payload = await requestJson(
@@ -1807,7 +1822,7 @@ export default function HomePage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bracket }),
+          body: JSON.stringify({}),
         },
         "Random deck generation",
       );
@@ -1836,12 +1851,14 @@ export default function HomePage() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decklist_text: decklist, bracket, multiplayer: true }),
+        body: JSON.stringify({ decklist_text: decklist, multiplayer: true }),
       },
       "Deck parse",
     );
     if (activeRunRef.current !== runId) return null;
     setParseRes(parsed);
+    const parsedBracket = Number(parsed?.bracket_report?.bracket || 3);
+    setBracket(parsedBracket);
 
     updateStatus("tagging");
     const tagged = await requestJson(
@@ -1861,16 +1878,19 @@ export default function HomePage() {
       );
     if (activeRunRef.current !== runId) return null;
     setTagRes(tagged);
+    const taggedBracket = Number(tagged?.bracket_report?.bracket || parsedBracket || 3);
+    setBracket(taggedBracket);
     setDisplayMap(tagged.card_display || {});
     const inferredWincons = inferWinconsFromTagged(tagged);
     setDetectedWincons(inferredWincons);
-    return { parsed, tagged, inferredWincons };
+    return { parsed, tagged, inferredWincons, effectiveBracket: taggedBracket };
   }
 
   async function runTagOnly() {
     const runId = activeRunRef.current + 1;
     activeRunRef.current = runId;
     try {
+      setActiveAction("tag");
       setSimRes(null);
       setAnalysis(null);
       setGuides(null);
@@ -1942,6 +1962,7 @@ export default function HomePage() {
     const runId = activeRunRef.current + 1;
     activeRunRef.current = runId;
     try {
+      setActiveAction("analysis");
       setSimRes(null);
       setAnalysis(null);
       setGuides(null);
@@ -1950,7 +1971,7 @@ export default function HomePage() {
       setSelectedCard(null);
       const prep = await parseAndTagDeck(runId);
       if (!prep || activeRunRef.current !== runId) return;
-      const { parsed, tagged, inferredWincons } = prep;
+      const { parsed, tagged, inferredWincons, effectiveBracket } = prep;
 
       updateStatus("sim-queued");
       const effectivePolicy = computeEffectivePolicy();
@@ -1966,7 +1987,7 @@ export default function HomePage() {
             runs: simRuns,
             turn_limit: turnLimit,
             policy: effectivePolicy,
-            bracket,
+            bracket: effectiveBracket,
             multiplayer: true,
             threat_model: tablePressure >= 40,
             primary_wincons: inferredWincons,
@@ -2017,7 +2038,7 @@ export default function HomePage() {
             cards: tagged.cards,
             commander: parsed.commander,
             commanders: parsed.commanders || [],
-            bracket,
+            bracket: effectiveBracket,
             template: "balanced",
             budget_max_usd: parseBudgetCap(budgetMaxUsd),
             sim_summary: simPayload.summary,
@@ -2027,6 +2048,9 @@ export default function HomePage() {
       );
       if (activeRunRef.current !== runId) return;
       setAnalysis(ana);
+      if (typeof ana?.bracket_report?.bracket === "number") {
+        setBracket(Number(ana.bracket_report.bracket));
+      }
       setTab("Deck Analysis");
       setMobilePane("views");
       updateStatus("analysis ready");
@@ -2119,6 +2143,12 @@ export default function HomePage() {
   }, [selectedCard]);
 
   useEffect(() => {
+    if (["idle", "done", "failed"].includes(normalizedStatus)) {
+      setActiveAction("none");
+    }
+  }, [normalizedStatus]);
+
+  useEffect(() => {
     const names = uniqueNonEmpty([
       ...collectBundleCardNames(currentSavedBundle),
       ...(analysis?.missing_roles || []).flatMap((row: any) => row?.cards || []),
@@ -2134,16 +2164,10 @@ export default function HomePage() {
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    const initialMode = isThemeMode(stored) ? stored : "system";
-    applyThemeMode(initialMode, media);
+    applySystemTheme(media);
 
     const syncTheme = () => {
-      const nextStored = window.localStorage.getItem(THEME_STORAGE_KEY);
-      const nextMode = isThemeMode(nextStored) ? nextStored : "system";
-      if (nextMode === "system") {
-        applyThemeMode("system", media);
-      }
+      applySystemTheme(media);
     };
 
     if (typeof media.addEventListener === "function") {
@@ -2334,6 +2358,37 @@ export default function HomePage() {
   }, [selectedCard]);
 
   useEffect(() => {
+    if (resetToken) {
+      setAccountOpen(true);
+      setAccountTab("recover");
+    }
+  }, [resetToken]);
+
+  useEffect(() => {
+    if (authUser?.email && !authEmail) {
+      setAuthEmail(authUser.email);
+    }
+    if (authUser) {
+      if (accountTab === "login" || accountTab === "register" || accountTab === "recover") {
+        setAccountTab("library");
+      }
+    } else if (accountTab === "library" || accountTab === "security") {
+      setAccountTab("login");
+    }
+  }, [authUser, authEmail, accountTab]);
+
+  useEffect(() => {
+    if (!accountOpen || typeof window === "undefined") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAccountOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [accountOpen]);
+
+  useEffect(() => {
     if (currentProjectId || projectName.trim()) return;
     const nextName = String(analysis?.deck_name || commanderLabel || "").trim();
     if (nextName) {
@@ -2342,17 +2397,6 @@ export default function HomePage() {
   }, [analysis?.deck_name, commanderLabel, currentProjectId, projectName]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const res = await fetch(apiUrl("/api/meta/updates"));
-        if (!res.ok) return;
-        const payload = await res.json();
-        setUpdatesMeta(payload);
-      } catch {
-        return;
-      }
-    })();
-
     void (async () => {
       try {
         const res = await fetch(apiUrl("/api/meta/integrations"));
@@ -2366,6 +2410,193 @@ export default function HomePage() {
   }, []);
 
   const sidebarProgressMeta = analysisProgressMeta.show ? analysisProgressMeta : decklistProgressMeta;
+  const accountInitials = (authUser?.email || "dc")
+    .split("@")[0]
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part: string) => part[0]?.toUpperCase() || "")
+    .join("") || "DC";
+  const accountTriggerLabel = "Account";
+  const accountTriggerMeta = authUser
+    ? (hasUnsavedChanges ? "Unsaved changes" : `${projects.length} saved deck${projects.length === 1 ? "" : "s"}`)
+    : "Sign in to save decks";
+  const selectedArtPreference = ART_PREFERENCE_OPTIONS.find((option) => option.value === artPreference) || ART_PREFERENCE_OPTIONS[2];
+  const activeAccountTab = resetToken
+    ? "recover"
+    : authUser
+      ? (accountTab === "security" ? accountTab : "library")
+      : (accountTab === "register" || accountTab === "recover" ? accountTab : "login");
+
+  function renderAccountLibrary() {
+    return (
+      <div className="stack">
+        <div className="sidebar-status-row">
+          {currentProjectId ? (
+            <span className="status-chip" data-tone={hasUnsavedChanges ? "warning" : "success"}>
+              {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
+            </span>
+          ) : null}
+          {lastSavedAt ? (
+            <span className="status-chip" data-tone="accent">
+              Last saved {new Date(lastSavedAt).toLocaleDateString()}
+            </span>
+          ) : null}
+          {localDraftSavedAt ? <span className="status-chip" data-tone="accent">Local backup</span> : null}
+        </div>
+        <div className="account-section-intro">
+          <strong>Your deck library</strong>
+          <span>Save the current deck, keep versions under one deck name, and reopen older snapshots when needed.</span>
+        </div>
+        <label>Saved deck name</label>
+        <input
+          className="input"
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+          placeholder={analysis?.deck_name || commanderLabel || "Untitled Project"}
+        />
+        <div className="account-primary-actions">
+          <button className="btn btn-primary" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy || !hasMeaningfulDeckState || Boolean(currentProjectId && !hasUnsavedChanges)}>
+            {projectBusy ? "Saving..." : currentProjectId ? (hasUnsavedChanges ? "Save new version" : "Already saved") : "Save current deck"}
+          </button>
+          <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>
+            Clear local draft
+          </button>
+        </div>
+        {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
+        <div className="saved-projects-list">
+          {(projects || []).map((project: any) => (
+            <div key={project.id} className="saved-project-row">
+              <div className="saved-project-row-header">
+                <button className="saved-project-main" onClick={() => loadLatestProject(project.id)} disabled={projectBusy}>
+                  <strong>{project.name || project.deck_name}</strong>
+                  <span>{project.commander_label || project.deck_name}</span>
+                  <span>{new Date(project.updated_at).toLocaleString()} · {project.version_count || 1} version{Number(project.version_count || 1) === 1 ? "" : "s"}</span>
+                </button>
+                <div className="saved-project-actions">
+                  <button className="btn saved-project-history" onClick={() => toggleProjectVersions(project.id)} disabled={projectBusy}>
+                    {expandedProjectId === project.id ? "Hide history" : "History"}
+                  </button>
+                  <button
+                    className="btn saved-project-delete"
+                    onClick={() => deleteProject(project.id)}
+                    disabled={projectBusy}
+                    aria-label={`Delete ${project.name || project.deck_name}`}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <div className="saved-project-pills">
+                {projectSummaryPills(project.summary).map((pill) => (
+                  <span key={`${project.id}-${pill}`} className="saved-project-pill">
+                    {pill}
+                  </span>
+                ))}
+                {currentProjectId === project.id ? <span className="saved-project-pill is-current">Current</span> : null}
+              </div>
+              {expandedProjectId === project.id ? (
+                <div className="saved-project-versions">
+                  {(projectVersions[project.id] || []).map((version: any) => (
+                    <button
+                      key={version.id}
+                      className="saved-project-version"
+                      onClick={() => loadProjectVersion(project.id, version.id)}
+                      disabled={projectBusy}
+                    >
+                      <strong>Version {version.version_number}</strong>
+                      <span>{new Date(version.created_at).toLocaleString()}</span>
+                      <span>{projectSummaryPills(version.summary).join(" · ")}</span>
+                    </button>
+                  ))}
+                  {!(projectVersions[project.id] || []).length ? <p className="control-help">No version snapshots yet.</p> : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {!projects.length ? <p className="control-help">No saved decks yet.</p> : null}
+        </div>
+      </div>
+    );
+  }
+
+  function renderAccountSecurity() {
+    return (
+      <div className="stack">
+        <div className="account-section-intro">
+          <strong>Security</strong>
+          <span>Manage recovery and the current session.</span>
+        </div>
+        <div className="mini-card" data-surface="2">
+          <div className="mini-label">Signed in as</div>
+          <div className="mini-value">{authUser?.email || "Unknown user"}</div>
+        </div>
+        <div className="account-primary-actions">
+          <button className="btn" onClick={() => { setAuthEmail(authUser?.email || authEmail); void requestPasswordReset(); }} disabled={authBusy}>
+            Email reset link
+          </button>
+          {authUser?.is_admin ? (
+            <a className="btn" href="/admin">
+              Open admin
+            </a>
+          ) : null}
+          <button className="btn" onClick={handleLogout} disabled={authBusy}>
+            Sign out
+          </button>
+        </div>
+        <p className="control-help">Password recovery uses a one-time email magic link. Signing out keeps local draft backups on this device unless you clear them.</p>
+      </div>
+    );
+  }
+
+  function renderSignedOutAccount() {
+    if (resetToken) {
+      return (
+        <div className="stack">
+          <div className="account-section-intro">
+            <strong>Finish recovery</strong>
+            <span>This one-time link resets the password and signs you back in.</span>
+          </div>
+          <label>New password</label>
+          <input className="input" type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="At least 10 characters" />
+          <div className="account-primary-actions">
+            <button className="btn btn-primary" onClick={confirmPasswordReset} disabled={authBusy}>Set new password</button>
+            <button className="btn" onClick={() => { setResetToken(""); setResetPassword(""); clearResetTokenFromUrl(); setAuthNotice(""); setAccountTab("login"); }}>Back to sign in</button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="stack">
+        <div className="account-section-intro">
+          <strong>{activeAccountTab === "register" ? "Create your account" : activeAccountTab === "recover" ? "Recover access" : "Sign in"}</strong>
+          <span>{activeAccountTab === "recover" ? "Request a one-time reset link by email." : "Accounts save decklists, tagged outputs, analysis snapshots, and version history."}</span>
+        </div>
+        <label>Email</label>
+        <input className="input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="you@example.com" />
+        {activeAccountTab !== "recover" ? (
+          <>
+            <label>Password</label>
+            <input className="input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="At least 10 characters" />
+            <div className="account-primary-actions">
+              <button className="btn btn-primary" onClick={() => handleAuth(activeAccountTab === "register" ? "register" : "login")} disabled={authBusy}>
+                {activeAccountTab === "register" ? "Create account" : "Log in"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="account-primary-actions">
+            <button className="btn btn-primary" onClick={requestPasswordReset} disabled={authBusy}>Email reset link</button>
+          </div>
+        )}
+        {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
+        <div className="account-primary-actions">
+          <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>Clear local draft</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`}>
@@ -2395,202 +2626,36 @@ export default function HomePage() {
           Views
         </button>
       </div>
+      <button
+        type="button"
+        className="account-launcher"
+        aria-haspopup="dialog"
+        aria-expanded={accountOpen}
+        aria-controls="account-drawer"
+        onClick={() => setAccountOpen(true)}
+      >
+        <span className="account-launcher-avatar">{accountInitials}</span>
+        <span className="account-launcher-copy">
+          <strong>{accountTriggerLabel}</strong>
+          <span>{accountTriggerMeta}</span>
+        </span>
+      </button>
       <aside className="ui-sidebar">
         <div className="sidebar-scroll stack">
           <div className="block stack sidebar-brand" data-surface="1">
-            <div className="sidebar-section-label">Analysis Desk</div>
             <h2 className="wordmark" aria-label="Deck.Check">
               <span className="wordmark-glyph">D</span>
               <span className="wordmark-text">
                 Deck<span className="wordmark-dot">.</span>Check
               </span>
             </h2>
-            <p className="muted">Bracket-aware parser, tags, goldfish, and optimization.</p>
-            <div className="sidebar-status-row">
-              {sidebarProgressMeta.show ? (
+            {sidebarProgressMeta.show ? (
+              <div className="sidebar-status-row">
                 <span className="status-chip" data-tone={progressTone(sidebarProgressMeta)}>
                   {sidebarProgressMeta.label}
                 </span>
-              ) : null}
-              <span className="status-chip" data-tone="accent">Bracket {bracket}</span>
-            </div>
-            <div className="sidebar-meta">
-              <p className="control-help">
-                Rules/data refresh: {updatesMeta?.sources?.[0]?.last_fetched_at ? new Date(updatesMeta.sources[0].last_fetched_at).toLocaleString() : "not fetched yet"}
-              </p>
-            </div>
-          </div>
-
-          <div className="sidebar-group sidebar-pane">
-            <div className="sidebar-section-label">Display Settings</div>
-            <div className="stack">
-              <label>Theme</label>
-              <div className="theme-toggle" role="group" aria-label="Theme mode">
-                {THEME_OPTIONS.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    className={`theme-option ${themeMode === option ? "is-active" : ""}`}
-                    aria-pressed={themeMode === option}
-                    onClick={() => {
-                      if (typeof window !== "undefined") {
-                        window.localStorage.setItem(THEME_STORAGE_KEY, option);
-                      }
-                      applyThemeMode(option);
-                    }}
-                  >
-                    {option === "system" ? "System" : option[0].toUpperCase() + option.slice(1)}
-                  </button>
-                ))}
               </div>
-
-              <label>Card art style</label>
-              <select className="select" value={artPreference} onChange={(e) => setArtPreference(normalizeArtPreference(e.target.value))}>
-                {ART_PREFERENCE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <p className="control-help">
-                Five modes cover the main display tastes in Magic: nostalgia, classic frames, readability, art-first treatments, and recency.
-              </p>
-              <p className="control-help">{selectedArtPreference.description}</p>
-            </div>
-          </div>
-
-          <div className="sidebar-group sidebar-pane">
-            <div className="sidebar-section-label">Account</div>
-            <div className="stack">
-              {!authChecked ? (
-                <p className="control-help">Checking session…</p>
-              ) : authUser ? (
-                <>
-                  <div className="sidebar-status-row">
-                    {currentProjectId ? (
-                      <span className="status-chip" data-tone={hasUnsavedChanges ? "warning" : "success"}>
-                        {hasUnsavedChanges ? "Unsaved changes" : "Saved"}
-                      </span>
-                    ) : null}
-                    {lastSavedAt ? (
-                      <span className="status-chip" data-tone="accent">
-                        Last saved {new Date(lastSavedAt).toLocaleDateString()}
-                      </span>
-                    ) : null}
-                    {localDraftSavedAt ? (
-                      <span className="status-chip" data-tone="accent">
-                        Local backup
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="control-help">Signed in as <strong>{authUser.email}</strong></p>
-                  <label>Saved deck name</label>
-                  <input
-                    className="input"
-                    value={projectName}
-                    onChange={(e) => setProjectName(e.target.value)}
-                    placeholder={analysis?.deck_name || commanderLabel || "Untitled Project"}
-                  />
-                  <div className="sidebar-inline-actions">
-                    <button className="btn" onClick={() => { void saveCurrentProject(); }} disabled={projectBusy || !hasMeaningfulDeckState || Boolean(currentProjectId && !hasUnsavedChanges)}>
-                      {projectBusy ? "Saving..." : currentProjectId ? (hasUnsavedChanges ? "Save new version" : "Already saved") : "Save current deck"}
-                    </button>
-                    <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>
-                      Clear local draft
-                    </button>
-                    <button className="btn" onClick={handleLogout} disabled={authBusy}>
-                      Sign out
-                    </button>
-                  </div>
-                  <p className="control-help">Saved decks keep the decklist, settings, and the latest tagged/analyzed state. Re-saving the same deck name appends a version snapshot.</p>
-                  <div className="saved-projects-list">
-                    {(projects || []).map((project: any) => (
-                      <div key={project.id} className="saved-project-row">
-                        <div className="saved-project-row-header">
-                          <button className="saved-project-main" onClick={() => loadLatestProject(project.id)} disabled={projectBusy}>
-                            <strong>{project.name || project.deck_name}</strong>
-                            <span>{project.commander_label || project.deck_name}</span>
-                            <span>{new Date(project.updated_at).toLocaleString()} · {project.version_count || 1} version{Number(project.version_count || 1) === 1 ? "" : "s"}</span>
-                          </button>
-                          <div className="saved-project-actions">
-                            <button className="btn saved-project-history" onClick={() => toggleProjectVersions(project.id)} disabled={projectBusy}>
-                              {expandedProjectId === project.id ? "Hide history" : "History"}
-                            </button>
-                            <button
-                              className="btn saved-project-delete"
-                              onClick={() => deleteProject(project.id)}
-                              disabled={projectBusy}
-                              aria-label={`Delete ${project.name || project.deck_name}`}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                        <div className="saved-project-pills">
-                          {projectSummaryPills(project.summary).map((pill) => (
-                            <span key={`${project.id}-${pill}`} className="saved-project-pill">
-                              {pill}
-                            </span>
-                          ))}
-                          {currentProjectId === project.id ? <span className="saved-project-pill is-current">Current</span> : null}
-                        </div>
-                        {expandedProjectId === project.id ? (
-                          <div className="saved-project-versions">
-                            {(projectVersions[project.id] || []).map((version: any) => (
-                              <button
-                                key={version.id}
-                                className="saved-project-version"
-                                onClick={() => loadProjectVersion(project.id, version.id)}
-                                disabled={projectBusy}
-                              >
-                                <strong>Version {version.version_number}</strong>
-                                <span>{new Date(version.created_at).toLocaleString()}</span>
-                                <span>{projectSummaryPills(version.summary).join(" · ")}</span>
-                              </button>
-                            ))}
-                            {!(projectVersions[project.id] || []).length ? <p className="control-help">No version snapshots yet.</p> : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                    {!projects.length ? <p className="control-help">No saved decks yet.</p> : null}
-                  </div>
-                </>
-              ) : (
-                <>
-                  {resetToken ? (
-                    <>
-                      <label>New password</label>
-                      <input className="input" type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="At least 10 characters" />
-                      <div className="sidebar-inline-actions">
-                        <button className="btn" onClick={confirmPasswordReset} disabled={authBusy}>Set new password</button>
-                        <button className="btn" onClick={() => { setResetToken(""); setResetPassword(""); clearResetTokenFromUrl(); setAuthNotice(""); }}>Back to login</button>
-                      </div>
-                      <p className="control-help">This one-time magic link can only be used once and expires quickly.</p>
-                    </>
-                  ) : (
-                    <>
-                      <label>Email</label>
-                      <input className="input" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="you@example.com" />
-                      <label>Password</label>
-                      <input className="input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="At least 10 characters" />
-                      <div className="sidebar-inline-actions">
-                        <button className="btn" onClick={() => handleAuth("login")} disabled={authBusy}>Log in</button>
-                        <button className="btn" onClick={() => handleAuth("register")} disabled={authBusy}>Create account</button>
-                        <button className="btn" onClick={requestPasswordReset} disabled={authBusy}>Email reset link</button>
-                      </div>
-                      {localDraftSavedAt ? <p className="control-help">Local draft backup from {new Date(localDraftSavedAt).toLocaleString()}.</p> : null}
-                      <div className="sidebar-inline-actions">
-                        <button className="btn" onClick={clearLocalDraft} disabled={!localDraftSavedAt}>Clear local draft</button>
-                      </div>
-                      <p className="control-help">Accounts let you save decklists together with their last tagged and analyzed state. A local draft backup is kept on this device between visits.</p>
-                    </>
-                  )}
-                </>
-              )}
-              {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
-              {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
-            </div>
+            ) : null}
           </div>
 
           <div className="sidebar-group sidebar-pane">
@@ -2600,6 +2665,15 @@ export default function HomePage() {
               <input className="input" value={moxfieldUrl} onChange={(e) => setMoxfieldUrl(e.target.value)} placeholder="Moxfield or Archidekt URL" />
               <button className="btn" onClick={importFromUrl}>Import URL</button>
               <p className="control-help">URL import is best-effort. If blocked, paste the text export directly.</p>
+              <label>Card art style</label>
+              <select className="select" value={artPreference} onChange={(e) => setArtPreference(normalizeArtPreference(e.target.value))}>
+                {ART_PREFERENCE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="control-help">{selectedArtPreference.description}</p>
               {urlImportNotice ? (
                 <p className={`import-notice import-notice-${urlImportNotice.tone}`} data-tone={urlImportNotice.tone === "error" ? "danger" : urlImportNotice.tone === "warn" ? "warning" : "accent"}>
                   {urlImportNotice.text}
@@ -2611,13 +2685,12 @@ export default function HomePage() {
           <div className="sidebar-group sidebar-pane">
             <div className="sidebar-section-label">Table Assumptions</div>
             <div className="stack">
-              <label>Bracket</label>
-              <select className="select" value={bracket} onChange={(e) => setBracket(Number(e.target.value))}>
-                {[1, 2, 3, 4, 5].map((b) => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
-              <p className="control-help">Use the bracket that best matches your table’s speed and expectations.</p>
+              <label>Inferred bracket</label>
+              <div className="mini-card" data-surface="2">
+                <div className="mini-value">{currentBracketReport ? `Bracket ${currentBracketValue}` : "Pending"}</div>
+                <div className="control-help">{currentBracketName || "Deck.Check will infer bracket from the deck once tagging starts."}</div>
+              </div>
+              <p className="control-help">Deck.Check infers bracket from fast mana, tutors, combo density, Game Changers, and simulated speed when available.</p>
 
               <label>Simulation Runs: {simRuns}</label>
               <p className="control-help">More runs make the results steadier. 2,000 is a good default.</p>
@@ -2725,12 +2798,33 @@ export default function HomePage() {
           </div>
         </div>
         <div className="sidebar-footer">
-          <button type="button" className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={generateRandomDeck}>Generate Random Deck</button>
-          <p className="control-help">Pick a random legal legendary-creature commander, build 38 lands, add 10-15 cheap instant-speed interaction, and fill the rest with commander-synergy cards.</p>
-          <button type="button" className="btn sidebar-run-btn sidebar-run-btn-secondary" onClick={runTagOnly}>Tag Deck Only</button>
-          <p className="control-help">Parse, validate, tag, and open only the views that do not require simulation.</p>
-          <button type="button" className="btn btn-primary sidebar-run-btn" onClick={runPipeline}>Run Full Analysis</button>
-          <p className="control-help">Fetch card data, goldfish results, and the full analysis stack.</p>
+          <button
+            type="button"
+            className={`btn sidebar-run-btn sidebar-run-btn-secondary ${randomDeckButtonProgress > 0 ? "is-progress-active" : ""}`}
+            onClick={generateRandomDeck}
+            title="Pick a random legal legendary-creature commander, build 38 lands, add 10-15 cheap instant-speed interaction, and fill the rest with commander-synergy cards."
+            style={{ "--button-progress": `${randomDeckButtonProgress}%` } as CSSProperties}
+          >
+            <span className="sidebar-run-btn-label">Generate Random Deck</span>
+          </button>
+          <button
+            type="button"
+            className={`btn sidebar-run-btn sidebar-run-btn-secondary ${tagDeckButtonProgress > 0 ? "is-progress-active" : ""}`}
+            onClick={runTagOnly}
+            title="Parse, validate, tag, and open only the views that do not require simulation."
+            style={{ "--button-progress": `${tagDeckButtonProgress}%` } as CSSProperties}
+          >
+            <span className="sidebar-run-btn-label">Tag Deck Only</span>
+          </button>
+          <button
+            type="button"
+            className={`btn btn-primary sidebar-run-btn ${fullAnalysisButtonProgress > 0 ? "is-progress-active" : ""}`}
+            onClick={runPipeline}
+            title="Fetch card data, goldfish results, and the full analysis stack."
+            style={{ "--button-progress": `${fullAnalysisButtonProgress}%` } as CSSProperties}
+          >
+            <span className="sidebar-run-btn-label">Run Full Analysis</span>
+          </button>
         </div>
 
       </aside>
@@ -2994,6 +3088,12 @@ export default function HomePage() {
               </p>
               {(typeThemeProfile?.card_types?.length || typeThemeProfile?.creature_subtypes?.length || typeThemeProfile?.package_signals?.length) ? (
                 <>
+                  {(typeThemeProfile?.deck_theme_tags || []).length ? (
+                    <p>
+                      <strong>Deck theme tags:</strong>{" "}
+                      {(typeThemeProfile?.deck_theme_tags || []).join(", ")}
+                    </p>
+                  ) : null}
                   <p>
                     <strong>Type signals:</strong>{" "}
                     {(typeThemeProfile?.card_types || [])
@@ -3575,12 +3675,17 @@ export default function HomePage() {
               </table>
               <h2>Bracket Status</h2>
               <p>
-                Bracket {analysis?.bracket_report?.bracket ?? bracket}
-                {analysis?.bracket_report?.bracket_name ? ` (${analysis?.bracket_report?.bracket_name})` : ""}.
+                {analysis?.bracket_report?.source === "inferred" ? "Inferred bracket" : "Bracket"} {analysis?.bracket_report?.bracket ?? currentBracketValue}
+                {analysis?.bracket_report?.bracket_name ? ` (${analysis?.bracket_report?.bracket_name})` : currentBracketName ? ` (${currentBracketName})` : ""}.
               </p>
               <p className="control-help">
                 Criteria below include official limits and bracket-aligned heuristics. Official failures are compliance issues; heuristic misses are guidance.
               </p>
+              {(analysis?.bracket_report?.inference?.reasoning || []).length > 0 && (
+                <ul className="control-help">
+                  {(analysis?.bracket_report?.inference?.reasoning || []).map((reason: string, i: number) => <li key={i}>{reason}</li>)}
+                </ul>
+              )}
               <table className="table">
                 <thead>
                   <tr><th>Criterion</th><th>Source</th><th>Current</th><th>Target</th><th>Status</th><th>Cards matching criterion</th></tr>
@@ -4418,6 +4523,61 @@ export default function HomePage() {
           </aside>
         </div>
       </main>
+
+      {accountOpen ? <button type="button" className="account-overlay" aria-label="Close account drawer" onClick={() => setAccountOpen(false)} /> : null}
+      <aside id="account-drawer" className={`account-drawer ${accountOpen ? "open" : ""}`} aria-hidden={!accountOpen} role="dialog" aria-modal="true" aria-labelledby="account-drawer-title">
+        <div className="account-drawer-header">
+          <div className="account-drawer-heading">
+            <div className="panel-kicker">Account</div>
+            <h3 id="account-drawer-title">{authUser ? "Deck Library" : resetToken ? "Recover Account" : "Sign In"}</h3>
+            {authUser ? (
+              <p className="account-drawer-subtitle">
+                {authUser.email}
+              </p>
+            ) : (
+              <p className="account-drawer-subtitle">
+                Save decks, reopen versions, and keep analysis attached to your list.
+              </p>
+            )}
+          </div>
+          <button type="button" className="account-drawer-close" aria-label="Close account drawer" onClick={() => setAccountOpen(false)}>×</button>
+        </div>
+        {!resetToken ? (
+          <div className="account-drawer-tabs" role="tablist" aria-label="Account sections">
+            {(authUser
+              ? [
+                  { key: "library", label: "Library" },
+                  { key: "security", label: "Security" },
+                ]
+              : [
+                  { key: "login", label: "Log in" },
+                  { key: "register", label: "Create account" },
+                  { key: "recover", label: "Recover" },
+                ]).map((tabOption) => (
+              <button
+                key={tabOption.key}
+                type="button"
+                className={`btn tab-btn ${activeAccountTab === tabOption.key ? "active" : ""}`}
+                aria-pressed={activeAccountTab === tabOption.key}
+                onClick={() => setAccountTab(tabOption.key as "login" | "register" | "recover" | "library" | "security")}
+              >
+                {tabOption.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="account-drawer-body">
+          {!authChecked ? (
+            <p className="control-help">Checking session…</p>
+          ) : authUser ? (
+            activeAccountTab === "security" ? renderAccountSecurity() : renderAccountLibrary()
+          ) : (
+            renderSignedOutAccount()
+          )}
+          {authNotice ? <p className="import-notice" data-tone="accent">{authNotice}</p> : null}
+          {authError ? <p className="import-notice" data-tone="danger">{authError}</p> : null}
+        </div>
+      </aside>
 
     </div>
   );

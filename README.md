@@ -264,6 +264,7 @@ Important runtime env vars:
 - `AUTH_MAGIC_LINK_TTL_MINUTES`
 - `AUTH_EMAIL_FROM`
 - `RESEND_API_KEY`
+- `ADMIN_EMAILS`
 
 For Netlify + Render production:
 - keep API and frontend on HTTPS

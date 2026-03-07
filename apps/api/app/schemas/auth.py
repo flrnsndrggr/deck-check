@@ -14,6 +14,10 @@ class AuthCredentialsRequest(BaseModel):
 class AuthUserResponse(BaseModel):
     id: int
     email: str
+    is_admin: bool = False
+    role: str = "user"
+    status: str = "active"
+    plan: str = "free"
 
 
 class AuthSessionResponse(BaseModel):

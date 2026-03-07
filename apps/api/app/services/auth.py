@@ -39,6 +39,16 @@ def normalize_email(email: str) -> str:
     return str(email or "").strip().lower()
 
 
+def admin_email_set() -> set[str]:
+    return {normalize_email(email) for email in str(settings.admin_emails or "").split(",") if normalize_email(email)}
+
+
+def is_admin_user(user: User | None) -> bool:
+    if user is None:
+        return False
+    return normalize_email(user.email) in admin_email_set()
+
+
 def normalize_project_name_key(name: str) -> str:
     normalized = re.sub(r"\s+", " ", str(name or "").strip().lower())
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
@@ -284,7 +294,20 @@ def get_session_context(db: Session, request: Request, allow_missing: bool = Fal
             return None
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired.")
     user = db.execute(select(User).where(User.id == row.user_id)).scalar_one()
+    if str(user.status or "active").strip().lower() != "active":
+        db.delete(row)
+        db.commit()
+        if allow_missing:
+            return None
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is not active.")
     return AuthContext(user=user, session=row, raw_token=raw_token)
+
+
+def require_admin_context(db: Session, request: Request) -> AuthContext:
+    ctx = get_session_context(db, request)
+    if not is_admin_user(ctx.user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+    return ctx
 
 
 def require_csrf(request: Request, ctx: AuthContext) -> None:
@@ -299,6 +322,13 @@ def session_payload(ctx: AuthContext | None) -> dict:
         return {"authenticated": False, "user": None, "csrf_token": None}
     return {
         "authenticated": True,
-        "user": {"id": ctx.user.id, "email": ctx.user.email},
+        "user": {
+            "id": ctx.user.id,
+            "email": ctx.user.email,
+            "is_admin": is_admin_user(ctx.user),
+            "role": ctx.user.role,
+            "status": ctx.user.status,
+            "plan": ctx.user.plan,
+        },
         "csrf_token": ctx.session.csrf_token,
     }

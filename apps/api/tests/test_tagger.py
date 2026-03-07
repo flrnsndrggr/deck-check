@@ -89,6 +89,8 @@ def test_type_theme_profile_tracks_creature_subtypes_and_packages():
     }
     profile = compute_type_theme_profile(cards, card_map)
     assert profile["dominant_creature_subtype"]["name"] == "Bird"
+    assert profile["primary_deck_theme_tag"] == "#BirdTypal"
+    assert "#BirdTypal" in profile["deck_theme_tags"]
     assert any("Bird is the main creature subtype package" in line for line in profile["package_signals"])
 
 
@@ -97,3 +99,31 @@ def test_archetype_weighting_uses_subtype_signal_for_typal_decks():
     card_map = {f"Bird {i}": {"type_line": "Creature — Bird", "oracle_text": ""} for i in range(1, 7)}
     w = compute_archetype_weights(cards, card_map, commanders=None)
     assert w["tribal"] > 0
+
+
+def test_tag_output_separates_global_and_deck_specific_prefixes():
+    cards = [
+        CardEntry(qty=1, name="Artifact Captain", section="commander"),
+        CardEntry(qty=1, name="Mind Stone", section="deck"),
+    ]
+    card_map = {
+        "Artifact Captain": {
+            "type_line": "Legendary Creature — Human Artificer",
+            "oracle_text": "Whenever you cast an artifact spell, draw a card.",
+            "legalities": {"commander": "legal"},
+        },
+        "Mind Stone": {
+            "type_line": "Artifact",
+            "oracle_text": "{T}: Add {C}. {1}, {T}, Sacrifice Mind Stone: Draw a card.",
+            "produced_mana": ["C"],
+            "cmc": 2,
+        },
+    }
+
+    _, _, lines = tag_cards(cards, card_map, commanders=["Artifact Captain"], use_global_prefix=True)
+    mind_stone_line = next(line for line in lines if line.startswith("1 Mind Stone"))
+
+    assert "#!Ramp" in mind_stone_line
+    assert "#!Rock" in mind_stone_line
+    assert "#CommanderSynergy" in mind_stone_line
+    assert "#!CommanderSynergy" not in mind_stone_line
