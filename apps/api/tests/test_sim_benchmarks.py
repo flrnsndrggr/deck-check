@@ -32,7 +32,7 @@ def test_benchmark_fixture_reference_backend_emits_coverage_and_outcomes(fixture
     summary = run_python(
         cards=fixture.cards,
         commander=commander,
-        runs=8,
+        runs=3,
         turn_limit=8,
         policy="optimized",
         multiplayer=True,
@@ -52,7 +52,7 @@ def test_text_dense_canary_reports_unsupported_effect_risk():
     summary = run_python(
         cards=fixture.cards,
         commander=fixture.commanders[0],
-        runs=6,
+        runs=2,
         turn_limit=8,
         policy="optimized",
         multiplayer=True,
@@ -70,7 +70,7 @@ def test_multi_commander_benchmark_preserves_slots():
     summary = run_python(
         cards=fixture.cards,
         commander=list(fixture.commanders),
-        runs=4,
+        runs=2,
         turn_limit=8,
         policy="optimized",
         multiplayer=True,

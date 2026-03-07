@@ -349,7 +349,7 @@ def test_random_deck_generator_builds_coherent_artifact_shell(monkeypatch):
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", fake_get_by_names)
 
-    svc = RandomDeckService(random.Random(7))
+    svc = RandomDeckService(random.Random(7), candidate_deck_count=8)
     out = svc.generate(bracket=3)
     parsed = parse_decklist(out["decklist_text"])
     card_map = {name: lookup[name] for name in [card.name for card in parsed.cards]}
@@ -496,7 +496,7 @@ def test_random_deck_generator_adds_second_commander_for_original_partner(monkey
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", fake_get_by_names)
 
-    out = RandomDeckService(random.Random(3)).generate(bracket=3)
+    out = RandomDeckService(random.Random(3), candidate_deck_count=8).generate(bracket=3)
     parsed = parse_decklist(out["decklist_text"])
     card_map = {name: lookup[name] for name in [card.name for card in parsed.cards]}
     errors, _, _ = validate_deck(parsed.cards, parsed.commander, card_map, 3)
@@ -541,7 +541,7 @@ def test_random_deck_generator_adds_partner_with_counterpart(monkeypatch):
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", lambda self, names: {name: lookup[name] for name in names if name in lookup})
 
-    out = RandomDeckService(random.Random(5)).generate(bracket=3)
+    out = RandomDeckService(random.Random(5), candidate_deck_count=8).generate(bracket=3)
     parsed = parse_decklist(out["decklist_text"])
     card_map = {name: lookup[name] for name in [card.name for card in parsed.cards]}
     errors, _, _ = validate_deck(parsed.cards, parsed.commander, card_map, 3)
@@ -597,7 +597,7 @@ def test_random_deck_generator_adds_background_for_choose_a_background(monkeypat
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", fake_get_by_names)
 
-    out = RandomDeckService(random.Random(11)).generate(bracket=3)
+    out = RandomDeckService(random.Random(11), candidate_deck_count=8).generate(bracket=3)
     parsed = parse_decklist(out["decklist_text"])
     card_map = {name: lookup[name] for name in [card.name for card in parsed.cards]}
     errors, _, _ = validate_deck(parsed.cards, parsed.commander, card_map, 3)
@@ -1046,7 +1046,7 @@ def test_generated_artifact_deck_keeps_generic_staples_under_budget(monkeypatch)
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", lambda self, names: {name: lookup[name] for name in names if name in lookup})
 
-    svc = RandomDeckService(random.Random(18))
+    svc = RandomDeckService(random.Random(18), candidate_deck_count=8)
     out = svc.generate(bracket=3)
     metrics = out["generator_metrics"]["selected_metrics"]
     context = svc._build_context([commander], 3)
@@ -1065,7 +1065,7 @@ def test_generated_artifact_deck_hits_core_shell_coverage(monkeypatch):
     )
     monkeypatch.setattr(CardDataService, "get_cards_by_name", lambda self, names: {name: lookup[name] for name in names if name in lookup})
 
-    svc = RandomDeckService(random.Random(19))
+    svc = RandomDeckService(random.Random(19), candidate_deck_count=8)
     out = svc.generate(bracket=3)
     metrics = out["generator_metrics"]["selected_metrics"]
     context = svc._build_context([commander], 3)

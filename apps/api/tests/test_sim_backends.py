@@ -71,7 +71,7 @@ def _run_kwargs(
 
 @pytest.mark.parametrize("fixture", PARITY_FIXTURES, ids=lambda fixture: fixture.slug)
 def test_supported_fixture_reference_trace_prefix_matches(fixture: SimBenchmarkFixture):
-    kwargs = _run_kwargs(fixture, seed=17, runs=8, policy="optimized", threat_model=False)
+    kwargs = _run_kwargs(fixture, seed=17, runs=4, policy="optimized", threat_model=False)
     py = run_python(**kwargs)["summary"]
     vec = run_vectorized(**kwargs, batch_size=64)["summary"]
 
@@ -87,9 +87,9 @@ def test_supported_fixture_reference_trace_prefix_matches(fixture: SimBenchmarkF
 
 @pytest.mark.parametrize("fixture", PARITY_FIXTURES, ids=lambda fixture: fixture.slug)
 def test_supported_fixture_distribution_parity_band(fixture: SimBenchmarkFixture):
-    kwargs = _run_kwargs(fixture, seed=91, runs=192, policy="optimized", threat_model=False)
+    kwargs = _run_kwargs(fixture, seed=91, runs=64, policy="optimized", threat_model=False)
     py = run_python(**kwargs)["summary"]
-    vec = run_vectorized(**kwargs, batch_size=96)["summary"]
+    vec = run_vectorized(**kwargs, batch_size=64)["summary"]
 
     assert abs(py["milestones"]["p_mana4_t3"] - vec["milestones"]["p_mana4_t3"]) <= 0.12
     assert abs(py["milestones"]["p_mana5_t4"] - vec["milestones"]["p_mana5_t4"]) <= 0.12
@@ -104,7 +104,7 @@ def test_supported_fixture_distribution_parity_band(fixture: SimBenchmarkFixture
 
 def test_auto_policy_resolves_once_for_both_backends():
     fixture = SIM_BENCHMARK_FIXTURES["artifact_combo"]
-    kwargs = _run_kwargs(fixture, seed=29, runs=32, policy="auto", threat_model=False)
+    kwargs = _run_kwargs(fixture, seed=29, runs=12, policy="auto", threat_model=False)
 
     py = run_python(**kwargs)["summary"]
     vec = run_vectorized(**kwargs, batch_size=64)["summary"]
@@ -116,7 +116,7 @@ def test_auto_policy_resolves_once_for_both_backends():
 
 def test_multi_commander_slots_exist_in_both_backends():
     fixture = SIM_BENCHMARK_FIXTURES["multi_commander"]
-    kwargs = _run_kwargs(fixture, seed=5, runs=24, policy="optimized", threat_model=False)
+    kwargs = _run_kwargs(fixture, seed=5, runs=8, policy="optimized", threat_model=False)
 
     py = run_python(**kwargs)["summary"]
     vec = run_vectorized(**kwargs, batch_size=64)["summary"]

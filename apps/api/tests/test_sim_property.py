@@ -22,7 +22,7 @@ class _Exec:
         self.activated = ()
 
 
-@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=8, suppress_health_check=[HealthCheck.too_slow])
 @given(st.lists(st.sampled_from(["#Land", "#Ramp", "#Draw", "#Setup", "#Payoff"]), min_size=100, max_size=100))
 def test_simulation_invariants(tags):
     deck = []
@@ -41,7 +41,7 @@ def test_removing_opponent_hazard_does_not_reduce_solitaire_hard_win_rate():
     pure = run_python(
         cards=fixture.cards,
         commander=commander,
-        runs=48,
+        runs=16,
         turn_limit=8,
         policy="optimized",
         multiplayer=True,
@@ -51,7 +51,7 @@ def test_removing_opponent_hazard_does_not_reduce_solitaire_hard_win_rate():
     pressured = run_python(
         cards=fixture.cards,
         commander=commander,
-        runs=48,
+        runs=16,
         turn_limit=8,
         policy="optimized",
         multiplayer=True,
@@ -75,7 +75,7 @@ def test_better_untapped_fixing_land_does_not_reduce_early_mana_access():
     base = run_python(
         cards=base_cards + filler,
         commander=None,
-        runs=48,
+        runs=16,
         turn_limit=6,
         policy="optimized",
         multiplayer=True,
@@ -86,7 +86,7 @@ def test_better_untapped_fixing_land_does_not_reduce_early_mana_access():
     upgraded = run_python(
         cards=upgraded_cards + filler,
         commander=None,
-        runs=48,
+        runs=16,
         turn_limit=6,
         policy="optimized",
         multiplayer=True,

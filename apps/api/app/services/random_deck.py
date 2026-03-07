@@ -588,9 +588,15 @@ def _is_package_coverage_key(key: str) -> bool:
 
 
 class RandomDeckService:
-    def __init__(self, rng: random.Random | None = None, card_service: CardDataService | None = None):
+    def __init__(
+        self,
+        rng: random.Random | None = None,
+        card_service: CardDataService | None = None,
+        candidate_deck_count: int = 24,
+    ):
         self.rng = rng or random.Random()
         self.card_service = card_service or CardDataService()
+        self.candidate_deck_count = max(1, int(candidate_deck_count))
 
     def _random_commander(self) -> Dict:
         query = "game:paper legal:commander t:legendary t:creature -is:funny"
@@ -2363,7 +2369,7 @@ class RandomDeckService:
                 last_errors = [f"Could not fetch candidate pool for {_safe_name(commander_card.get('name')) or 'selected commander'}."]
                 continue
 
-            drafted = self._generate_candidate_decks(context, candidates, count=24)
+            drafted = self._generate_candidate_decks(context, candidates, count=self.candidate_deck_count)
             generated = self._select_final_deck(drafted, context)
             if generated is None:
                 last_errors = [f"Could not draft a candidate deck for {commander_display_name(context.commander_names)}."]
