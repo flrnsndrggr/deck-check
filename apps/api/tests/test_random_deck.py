@@ -387,6 +387,23 @@ def test_commander_plan_inference_prefers_artifacts_for_artifact_commander():
     assert plan.confidence > 0.34
 
 
+def test_artifact_commander_counts_as_artifact_payoff_support():
+    commander = _make_card(
+        "Captain of Relics",
+        mana_cost="{2}{W}",
+        cmc=3,
+        type_line="Legendary Creature — Human Artificer",
+        oracle_text="Whenever you cast an artifact spell, create a 1/1 colorless Thopter artifact creature token with flying.",
+    )
+    svc = RandomDeckService(random.Random(1))
+    context = svc._build_context([commander], bracket=3)
+    entry = CardEntry(qty=1, name=commander["name"], section="commander", tags=[], confidence={}, explanations={})
+    provides, _needs = svc._candidate_support_axes(commander, entry, context)
+
+    assert "artifact_payoff" in provides
+    assert svc._support_counts([], context=context)["artifact_payoff"] >= 1
+
+
 def test_commander_plan_inference_falls_back_to_typal_when_subtype_signal_is_strong():
     commander = _make_card(
         "Aerie Marshal",

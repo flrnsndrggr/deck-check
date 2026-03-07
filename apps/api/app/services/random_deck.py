@@ -1074,7 +1074,7 @@ class RandomDeckService:
             needs.add("etb_target")
         if "#Artifacts" in tags or "artifact" in type_line:
             provides.add("artifact_mass")
-        if "#Artifacts" in tags and any(term in txt for term in ["artifacts you control", "cast an artifact spell", "whenever an artifact"]):
+        if any(term in txt for term in ["artifacts you control", "cast an artifact spell", "whenever an artifact"]):
             provides.add("artifact_payoff")
         if "#Enchantments" in tags or "enchantment" in type_line:
             provides.add("enchantment_mass")
@@ -1317,11 +1317,32 @@ class RandomDeckService:
                 counts[package] += 1
         return counts
 
-    def _support_counts(self, selected: Sequence[TaggedCandidate]) -> Counter:
+    def _commander_support_counts(self, context: DeckContext | None) -> Counter:
+        counts: Counter = Counter()
+        if context is None:
+            return counts
+        commander_map = {name: card for name, card in zip(context.commander_names, context.commander_cards)}
+        commander_entries = [self._entry_with_tags(name, "commander") for name in context.commander_names]
+        for entry in commander_entries:
+            intrinsic_tags(entry, commander_map.get(entry.name, {}))
+        if commander_entries:
+            commander_archetypes = compute_archetype_weights(commander_entries, commander_map, context.commander_names)
+            apply_context_tags(commander_entries, commander_map, commander_archetypes, context.commander_names)
+        for entry in commander_entries:
+            card = commander_map.get(entry.name)
+            if not card:
+                continue
+            provides, _needs = self._candidate_support_axes(card, entry, context)
+            for axis in provides:
+                counts[axis] += 1
+        return counts
+
+    def _support_counts(self, selected: Sequence[TaggedCandidate], *, context: DeckContext | None = None) -> Counter:
         counts: Counter = Counter()
         for candidate in selected:
             for axis in candidate.provides:
                 counts[axis] += 1
+        counts.update(self._commander_support_counts(context))
         return counts
 
     def _family_counts(self, selected: Sequence[TaggedCandidate]) -> Counter:
@@ -1346,11 +1367,12 @@ class RandomDeckService:
         package: str,
         *,
         secondary: bool = False,
+        context: DeckContext | None = None,
     ) -> tuple[float, str | None, Dict[str, Dict[str, float]]]:
         targets = self._package_axis_targets(package, secondary=secondary)
         if not targets:
             return 1.0, None, {}
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
         axis_state: Dict[str, Dict[str, float]] = {}
         weakest_axis: str | None = None
         weakest_ratio = 999.0
@@ -1381,6 +1403,7 @@ class RandomDeckService:
             selected,
             context.plan.primary_package,
             secondary=False,
+            context=context,
         )
         secondary_rows: Dict[str, Any] = {}
         for package in context.plan.secondary_packages:
@@ -1388,6 +1411,7 @@ class RandomDeckService:
                 selected,
                 package,
                 secondary=True,
+                context=context,
             )
             secondary_rows[package] = {
                 "completion": round(completion, 3),
@@ -1637,7 +1661,7 @@ class RandomDeckService:
     ) -> float:
         coverage = self._coverage_counts(selected)
         package_counts = self._package_counts(selected)
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
         family_counts = self._family_counts(selected)
 
         score = self._candidate_pick_score(
@@ -1693,7 +1717,7 @@ class RandomDeckService:
     ) -> TaggedCandidate | None:
         coverage = self._coverage_counts(selected)
         package_counts = self._package_counts(selected)
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
         family_counts = self._family_counts(selected)
 
         ranked: List[tuple[float, TaggedCandidate]] = []
@@ -1731,6 +1755,7 @@ class RandomDeckService:
             selected,
             package,
             secondary=secondary,
+            context=context,
         )
         ranked: List[tuple[float, TaggedCandidate]] = []
         for candidate in candidates:
@@ -1740,7 +1765,7 @@ class RandomDeckService:
                 continue
             if weakest_axis and weakest_axis not in candidate.provides:
                 if not any(
-                    axis in candidate.provides and self._support_counts(selected).get(axis, 0) < target
+                    axis in candidate.provides and self._support_counts(selected, context=context).get(axis, 0) < target
                     for axis, target in axis_targets.items()
                 ):
                     continue
@@ -1762,7 +1787,7 @@ class RandomDeckService:
 
     def _retention_score(self, candidate: TaggedCandidate, context: DeckContext, selected: Sequence[TaggedCandidate]) -> float:
         coverage = self._coverage_counts(selected)
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
         score = candidate.base_score
         if context.plan.primary_package in candidate.packages:
             score += 5.0
@@ -1787,7 +1812,7 @@ class RandomDeckService:
     ) -> List[TaggedCandidate]:
         selected_names = {row.entry.name for row in selected}
         coverage = self._coverage_counts(selected)
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
 
         def try_swap(
             must_roles: Set[str] | None = None,
@@ -1846,7 +1871,7 @@ class RandomDeckService:
                     selected_names.add(pick.entry.name)
                 elif not try_swap(must_support=axis):
                     break
-                support_counts = self._support_counts(selected)
+                support_counts = self._support_counts(selected, context=context)
 
         coverage = self._coverage_counts(selected)
 
@@ -1882,6 +1907,7 @@ class RandomDeckService:
                 remaining,
                 context.plan.primary_package,
                 secondary=False,
+                context=context,
             )
             primary_count = sum(1 for row in remaining if context.plan.primary_package in row.packages)
             if completion < 0.95 or primary_count < primary_core_floor:
@@ -1893,6 +1919,7 @@ class RandomDeckService:
                 remaining,
                 package,
                 secondary=True,
+                context=context,
             )
             secondary_floor = max(
                 2,
@@ -1969,7 +1996,7 @@ class RandomDeckService:
     def _score_generated_deck(self, context: DeckContext, selected: Sequence[TaggedCandidate]) -> tuple[float, Dict[str, Any]]:
         coverage = self._coverage_counts(selected)
         package_counts = self._package_counts(selected)
-        support_counts = self._support_counts(selected)
+        support_counts = self._support_counts(selected, context=context)
         family_counts = self._family_counts(selected)
         five_plus = sum(1 for row in selected if _mana_value(row.card) >= 5)
         package_completion = self._package_completion_snapshot(context, selected)
@@ -2117,6 +2144,7 @@ class RandomDeckService:
                 selected,
                 context.plan.primary_package,
                 secondary=False,
+                context=context,
             )
             if completion >= 1.0 and sum(1 for row in selected if context.plan.primary_package in row.packages) >= max(4, int(primary_target * 0.55)):
                 break
@@ -2142,6 +2170,7 @@ class RandomDeckService:
                     selected,
                     package,
                     secondary=True,
+                    context=context,
                 )
                 if completion >= 1.0 and sum(1 for row in selected if package in row.packages) >= secondary_floor:
                     break
@@ -2167,7 +2196,7 @@ class RandomDeckService:
                 add_candidate(pick)
 
         for axis, target in context.plan.support_targets.items():
-            while self._support_counts(selected)[axis] < target and len(selected) < spell_target:
+            while self._support_counts(selected, context=context)[axis] < target and len(selected) < spell_target:
                 pick = self._pick_candidate(candidates, selected_names, context, selected, must_support=axis)
                 if pick is None:
                     break

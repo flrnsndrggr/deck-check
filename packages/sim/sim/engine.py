@@ -1682,14 +1682,12 @@ def simulate_one(
                 model_win_reason = turn_outcome.reason
             elif turn_outcome.tier == OutcomeTier.DOMINANT and model_win_reason is None:
                 model_win_reason = turn_outcome.reason
-        if turn_outcome.tier == OutcomeTier.HARD_WIN and win_turn is None:
+        if turn_outcome.tier == OutcomeTier.HARD_WIN:
             win_turn = turn
             achieved_wincon = turn_outcome.wincon
             win_reason = turn_outcome.reason
-        elif turn_outcome.tier in {OutcomeTier.MODEL_WIN, OutcomeTier.DOMINANT} and achieved_wincon is None:
-            win_turn = turn
-            achieved_wincon = turn_outcome.wincon
-            win_reason = turn_outcome.reason
+        elif turn_outcome.tier in {OutcomeTier.MODEL_WIN, OutcomeTier.DOMINANT} and model_win_reason is None:
+            model_win_reason = turn_outcome.reason
 
         if capture_trace:
             turn_trace.append(

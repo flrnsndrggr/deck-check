@@ -427,6 +427,23 @@ def _two_turn_commander_value(card: Any, card_exec: Any, fingerprint: DeckFinger
     return round(value, 4)
 
 
+def _visible_commander_support(state: GameState, hand: Sequence[Any], commander_card: Any) -> float:
+    support = 0.0
+    commander_name = _normalize_name(getattr(commander_card, "name", ""))
+    visible_cards = list(hand) + [perm.card for perm in state.battlefield]
+    for card in visible_cards:
+        if _normalize_name(getattr(card, "name", "")) == commander_name:
+            continue
+        tags = set(getattr(card, "tags", []) or [])
+        if "#Voltron" in tags or float(getattr(card, "commander_buff", 0.0) or 0.0) > 0.0:
+            support += 0.85
+        if float(getattr(card, "extra_combat_factor", 1.0) or 1.0) > 1.0:
+            support += 0.7
+        if "#Protection" in tags:
+            support += 0.2
+    return min(2.6, round(support, 4))
+
+
 def _card_immediate_value(card: Any, card_exec: Any, intent: str, fingerprint: DeckFingerprint, state: GameState, winlines: Sequence[Winline]) -> float:
     tags = set(getattr(card, "tags", []) or [])
     exec_ops = set(getattr(getattr(card_exec, "coverage_summary", None), "executable", ()) or ())
@@ -570,6 +587,7 @@ def choose_best_action(
             or float(getattr(card, "evasion_score", 0.0) or 0.0) >= 0.4
         ):
             commander_score += 1.25 if intent in {"assemble", "convert", "race"} else 0.75
+        commander_score += _visible_commander_support(state, hand, card)
         candidates.append(
             {
                 "type": "commander",
