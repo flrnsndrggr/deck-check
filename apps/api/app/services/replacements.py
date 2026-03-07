@@ -106,10 +106,10 @@ class DeckContext:
     deck_names: Set[str]
     active_theme_keys: Set[str]
     active_theme_strengths: Dict[str, float]
+    type_profile: Dict[str, Any]
     cached_in_deck_profiles: Dict[str, "CardProfile"] = field(default_factory=dict)
     theme_profile_version: str = "type-theme:v1"
     theme_profile_source: str = "compute_type_theme_profile"
-    type_profile: Dict[str, Any]
 
 
 @dataclass(frozen=True)

@@ -445,7 +445,7 @@ def build_sim_benchmark_fixtures() -> dict[str, SimBenchmarkFixture]:
         + _copies("Modal Value", 10, tags=["#Draw", "#Setup"], mana_value=3, type_line="Instant", oracle_text="Choose one or both — Draw two cards; or create a token.")
         + _copies("Tutor", 8, tags=["#Tutor"], mana_value=2, type_line="Sorcery", oracle_text="Search your library for an artifact or enchantment card, reveal it, put it into your hand.")
         + _copies("Counter", 8, tags=["#Counter", "#Protection"], mana_value=2, type_line="Instant", oracle_text="Counter target spell.")
-        + _copies("Payoff", 15, tags=["#Payoff", "#Wincon"], mana_value=5, type_line="Creature - Wizard", oracle_text="", is_creature=True, is_permanent=True, power=4),
+        + _copies("Payoff", 5, tags=["#Payoff", "#Wincon"], mana_value=5, type_line="Creature - Wizard", oracle_text="", is_creature=True, is_permanent=True, power=4),
         expected_primary_plan="combo",
         unsupported_risk_expected=True,
     )
@@ -454,4 +454,3 @@ def build_sim_benchmark_fixtures() -> dict[str, SimBenchmarkFixture]:
 
 
 SIM_BENCHMARK_FIXTURES = build_sim_benchmark_fixtures()
-
