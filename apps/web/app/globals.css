@@ -882,7 +882,6 @@ body {
   min-width: 0;
   height: var(--workspace-banner-height);
   overflow: hidden;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   background: var(--banner-blue-strong);
   pointer-events: none;
 }
@@ -914,12 +913,12 @@ body {
   background:
     linear-gradient(
       94deg,
-      rgba(8, 30, 86, 0.97) 0%,
-      rgba(21, 94, 239, 0.92) 18%,
-      rgba(21, 94, 239, 0.78) 38%,
-      rgba(21, 94, 239, 0.58) 62%,
-      rgba(21, 94, 239, 0.36) 82%,
-      rgba(21, 94, 239, 0.22) 100%
+      rgba(8, 30, 86, 0.96) 0%,
+      rgba(21, 94, 239, 0.92) 24%,
+      rgba(21, 94, 239, 0.7) 42%,
+      rgba(21, 94, 239, 0.44) 60%,
+      rgba(21, 94, 239, 0.2) 78%,
+      rgba(21, 94, 239, 0.08) 100%
     );
 }
 
@@ -935,7 +934,6 @@ body {
 .workspace-banner-pane-sidebar {
   grid-column: 1;
   grid-row: 1;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .workspace-banner-pane-detail {
@@ -944,7 +942,6 @@ body {
   --banner-solid-width: 320px;
   display: flex;
   align-items: stretch;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .workspace-banner-pane-main {
@@ -957,30 +954,17 @@ body {
   display: flex;
   align-items: flex-end;
   height: 100%;
-  padding: 38px 24px 32px;
+  padding: 38px 24px 30px;
 }
 
 .workspace-banner-slab-sidebar {
   width: 100%;
-  background:
-    linear-gradient(
-      90deg,
-      rgba(8, 30, 86, 0.98) 0%,
-      rgba(21, 94, 239, 0.94) 72%,
-      rgba(21, 94, 239, 0.82) 100%
-    );
+  background: none;
 }
 
 .workspace-banner-slab-title {
   width: min(100%, var(--banner-solid-width));
-  background:
-    linear-gradient(
-      90deg,
-      rgba(8, 30, 86, 0.95) 0%,
-      rgba(21, 94, 239, 0.87) 68%,
-      rgba(21, 94, 239, 0.22) 88%,
-      rgba(21, 94, 239, 0) 100%
-    );
+  background: none;
 }
 
 .workspace-banner-main-grid {
@@ -990,14 +974,14 @@ body {
 }
 
 .workspace-banner-main-cell {
-  --banner-solid-width: 340px;
+  --banner-solid-width: 280px;
   min-width: 0;
   display: flex;
   overflow: hidden;
 }
 
 .workspace-banner-main-cell + .workspace-banner-main-cell {
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 0;
 }
 
 .workspace-banner-insight-cell:not(.is-open) {
@@ -1011,25 +995,27 @@ body {
   overflow: hidden;
   color: #fff;
   font-family: var(--font-display), Georgia, serif;
-  font-size: clamp(28px, 2.5vw, 42px);
+  font-size: clamp(22px, 2vw, 32px);
   font-weight: 650;
-  line-height: 1.02;
+  line-height: 1.05;
   letter-spacing: -0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-shadow: 0 2px 12px rgba(6, 14, 32, 0.34);
 }
 
 .workspace-banner-pane-detail .workspace-banner-title {
-  font-size: clamp(26px, 1.95vw, 36px);
+  font-size: clamp(20px, 1.45vw, 28px);
 }
 
 .workspace-banner-insight-cell .workspace-banner-title {
-  font-size: clamp(22px, 1.35vw, 30px);
+  font-size: clamp(18px, 1.15vw, 24px);
 }
 
 .workspace-banner .wordmark {
   color: #fff;
-  font-size: clamp(28px, 2vw, 38px);
+  font-size: clamp(22px, 1.65vw, 30px);
+  text-shadow: 0 2px 12px rgba(6, 14, 32, 0.34);
 }
 
 .workspace-banner .wordmark-text,
@@ -1100,11 +1086,11 @@ body {
   }
 
   .workspace-banner-pane-detail {
-    --banner-solid-width: 280px;
+    --banner-solid-width: 240px;
   }
 
   .workspace-banner-main-cell {
-    --banner-solid-width: 300px;
+    --banner-solid-width: 250px;
   }
 }
 
@@ -1124,7 +1110,6 @@ body {
     grid-row: 1;
     height: var(--workspace-banner-height);
     overflow: hidden;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
   .workspace-banner-backdrop-mobile {
@@ -1134,7 +1119,7 @@ body {
   }
 
   .workspace-banner-pane-mobile {
-    --banner-solid-width: 280px;
+    --banner-solid-width: 240px;
     position: relative;
     z-index: 1;
     height: 100%;
@@ -1203,7 +1188,7 @@ body {
   }
 
   .workspace-banner-pane-mobile .workspace-banner-title {
-    font-size: clamp(30px, 8vw, 42px);
+    font-size: clamp(22px, 7vw, 32px);
   }
 
   .account-launcher {
@@ -4261,11 +4246,12 @@ body::after {
   background:
     linear-gradient(
       90deg,
-      rgba(21, 94, 239, 0.96) 0%,
-      rgba(21, 94, 239, 0.86) 12%,
-      rgba(21, 94, 239, 0.66) 32%,
-      rgba(21, 94, 239, 0.42) 58%,
-      rgba(21, 94, 239, 0.2) 100%
+      rgba(8, 30, 86, 0.96) 0%,
+      rgba(21, 94, 239, 0.92) 24%,
+      rgba(21, 94, 239, 0.7) 42%,
+      rgba(21, 94, 239, 0.44) 60%,
+      rgba(21, 94, 239, 0.2) 78%,
+      rgba(21, 94, 239, 0.08) 100%
     );
 }
 
