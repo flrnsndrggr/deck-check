@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models.sim_job import SimJob
+from app.services.problem_log import format_exception_detail, record_problem_event
 from app.workers.cache import set_cached_simulation
 from sim.engine import run_simulation_batch as run_simulation_batch_python
 
@@ -88,6 +89,18 @@ def run_simulation_task(job_id: str, payload: dict):
             row.status = "failed"
             row.result = {"error": err, "summary": {"backend_used": "failed"}}
             db.commit()
+        try:
+            record_problem_event(
+                db,
+                source="worker",
+                category="simulation_task_failed",
+                message=err,
+                detail=format_exception_detail(exc),
+                context={"job_id": job_id, "requested_backend": payload.get("sim_backend", "vectorized")},
+                level="error",
+            )
+        except Exception:
+            pass
         return {"error": err, "summary": {"backend_used": "failed"}}
     finally:
         db.close()

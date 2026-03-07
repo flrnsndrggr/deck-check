@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
@@ -6,12 +7,14 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text
 from threading import Thread
 from queue import Queue as ThreadQueue, Empty as QueueEmpty
+from uuid import uuid4
 
 from app.api.routes import router
 from app.db.session import engine
 from app.core.config import settings
 import app.models  # noqa: F401
 from app.workers.queue import redis_conn
+from app.services.problem_log import format_exception_detail, record_problem_event_safe
 
 
 app = FastAPI(title="Deck.Check API", version="0.1.0")
@@ -61,14 +64,54 @@ def _run_with_timeout(fn, timeout_s: float = 1.5):
 
 @app.middleware("http")
 async def max_body_size_guard(request: Request, call_next):
+    request.state.request_id = str(uuid4())
     cl = request.headers.get("content-length")
     if cl:
         try:
             if int(cl) > settings.max_request_bytes:
-                return JSONResponse({"detail": "Request body too large"}, status_code=413)
+                resp = JSONResponse({"detail": "Request body too large", "request_id": request.state.request_id}, status_code=413)
+                resp.headers["X-Request-ID"] = request.state.request_id
+                return resp
         except Exception:
             pass
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = getattr(request.state, "request_id", "")
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    request_id = getattr(request.state, "request_id", str(uuid4()))
+    record_problem_event_safe(
+        source="api",
+        category="request_validation",
+        message="Request validation failed.",
+        detail=str(exc),
+        path=request.url.path,
+        request_id=request_id,
+        context={"errors": exc.errors()[:20]},
+        level="warning",
+    )
+    resp = JSONResponse({"detail": exc.errors(), "request_id": request_id}, status_code=422)
+    resp.headers["X-Request-ID"] = request_id
+    return resp
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", str(uuid4()))
+    record_problem_event_safe(
+        source="api",
+        category="unhandled_exception",
+        message=f"{type(exc).__name__}: {exc}",
+        detail=format_exception_detail(exc),
+        path=request.url.path,
+        request_id=request_id,
+        level="error",
+    )
+    resp = JSONResponse({"detail": "Internal server error", "request_id": request_id}, status_code=500)
+    resp.headers["X-Request-ID"] = request_id
+    return resp
 
 
 @app.get("/health")

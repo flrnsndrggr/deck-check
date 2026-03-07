@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.schemas.deck import CardEntry
 from app.services.commander_utils import combined_color_identity, commander_names_from_cards, legal_commander_pairing
 from app.services.parser import singleton_violations
+from app.services.tagger import tag_cards
 
 BASIC_LANDS = {
     "Plains",
@@ -241,7 +242,154 @@ def _bracket_profiles() -> Dict:
     return DEFAULT_BRACKET_PROFILES
 
 
-def validate_deck(cards: List[CardEntry], commander: str | None, card_map: Dict[str, Dict], bracket: int) -> tuple[list[str], list[str], dict]:
+def _speed_bracket_hint(sim_summary: Dict | None) -> int | None:
+    if not sim_summary:
+        return None
+    win_metrics = sim_summary.get("win_metrics", {}) or {}
+    median_win_turn = win_metrics.get("median_win_turn")
+    if isinstance(median_win_turn, (int, float)):
+        if median_win_turn <= 5:
+            return 5
+        if median_win_turn <= 6:
+            return 4
+        if median_win_turn <= 8:
+            return 3
+        if median_win_turn <= 10:
+            return 2
+        return 1
+    return None
+
+
+def infer_bracket(
+    cards: List[CardEntry],
+    commander: str | None,
+    card_map: Dict[str, Dict],
+    sim_summary: Dict | None = None,
+    tagged_cards: List[CardEntry] | None = None,
+) -> Dict:
+    commander_names = commander_names_from_cards(cards, fallback_commander=commander)
+    working_cards = tagged_cards or [c.model_copy(deep=True) for c in cards]
+    if tagged_cards is None:
+        working_cards, _, _ = tag_cards(working_cards, card_map, commander_names, use_global_prefix=False)
+
+    main_entries = _deck_main_entries(working_cards)
+    game_changers = set(_load_json("game_changers.json", {}).get("cards", []))
+    gc_count, gc_rows = _sum_by_names(main_entries, game_changers)
+    bracket_limits = _load_json("brackets.json", {}).get("limits", {}) or {}
+    profiles = _bracket_profiles()
+    signal_rows = {
+        "tutor_density": _sum_by_tags(main_entries, {"#Tutor"}),
+        "fast_mana_density": _sum_by_tags(main_entries, {"#FastMana"}),
+        "combo_density": _sum_by_tags(main_entries, {"#Combo"}),
+        "boardwipe_density": _sum_by_tags(main_entries, {"#Boardwipe"}),
+    }
+    signal_counts = {
+        "game_changers": gc_count,
+        "tutor_density": signal_rows["tutor_density"][0],
+        "fast_mana_density": signal_rows["fast_mana_density"][0],
+        "combo_density": signal_rows["combo_density"][0],
+        "boardwipe_density": signal_rows["boardwipe_density"][0],
+    }
+    speed_hint = _speed_bracket_hint(sim_summary)
+    power_intensity = (
+        signal_counts["game_changers"] * 3.0
+        + signal_counts["fast_mana_density"] * 1.6
+        + signal_counts["tutor_density"] * 1.3
+        + signal_counts["combo_density"] * 1.4
+        + ({None: 0.0, 1: 0.0, 2: 1.0, 3: 2.25, 4: 4.0, 5: 6.0}.get(speed_hint, 0.0))
+    )
+    intensity_floor = {1: 0.0, 2: 1.5, 3: 4.5, 4: 9.0, 5: 14.0}
+    intensity_ceiling = {1: 4.0, 2: 8.0, 3: 14.0, 4: 22.0, 5: 999.0}
+    score_rows: List[Dict] = []
+
+    for bracket_value in range(1, 6):
+        profile = profiles.get(str(bracket_value), profiles.get("3", {}))
+        score = 0.0
+        deltas: List[str] = []
+        for cfg in profile.get("criteria", []):
+            key = cfg.get("key")
+            criterion_type = cfg.get("type", "max")
+            weight = 4.0 if cfg.get("source") == "official" else 1.5
+            if key == "game_changers":
+                current = gc_count
+                min_v = cfg.get("min")
+                max_v = int(bracket_limits.get(str(bracket_value), DEFAULT_BRACKET_LIMITS.get(bracket_value, 2)))
+            else:
+                current = signal_counts.get(str(key), 0)
+                min_v = cfg.get("min")
+                max_v = cfg.get("max")
+
+            if criterion_type == "max" and max_v is not None:
+                delta = max(0, current - max_v)
+            elif criterion_type == "min" and min_v is not None:
+                delta = max(0, min_v - current)
+            elif criterion_type == "range":
+                lo = 0 if min_v is None else min_v
+                hi = 10**9 if max_v is None else max_v
+                delta = max(0, lo - current, current - hi)
+            else:
+                delta = 0
+            if delta:
+                score += weight * float(delta)
+                deltas.append(f"{cfg.get('label', key)} {current}")
+
+        if speed_hint is not None:
+            score += abs(bracket_value - speed_hint) * 1.25
+        if power_intensity < intensity_floor[bracket_value]:
+            score += (intensity_floor[bracket_value] - power_intensity) * 1.15
+        if power_intensity > intensity_ceiling[bracket_value]:
+            score += (power_intensity - intensity_ceiling[bracket_value]) * 0.65
+        score_rows.append(
+            {
+                "bracket": bracket_value,
+                "score": round(score, 3),
+                "name": profile.get("name", f"Bracket {bracket_value}"),
+                "deltas": deltas[:4],
+            }
+        )
+
+    score_rows.sort(key=lambda row: (row["score"], -row["bracket"]))
+    best = score_rows[0]
+    second_score = score_rows[1]["score"] if len(score_rows) > 1 else best["score"]
+    confidence_gap = max(0.0, second_score - best["score"])
+    reasons: List[str] = []
+    if signal_counts["game_changers"]:
+        reasons.append(f"{signal_counts['game_changers']} Game Changer card(s) push the deck upward.")
+    if signal_counts["fast_mana_density"]:
+        reasons.append(f"{signal_counts['fast_mana_density']} fast mana piece(s) suggest a faster table band.")
+    if signal_counts["tutor_density"]:
+        reasons.append(f"{signal_counts['tutor_density']} tutor-tagged card(s) increase consistency.")
+    if signal_counts["combo_density"]:
+        reasons.append(f"{signal_counts['combo_density']} combo-tagged card(s) raise deterministic finish density.")
+    if speed_hint is not None:
+        reasons.append(f"Simulated speed points toward bracket {speed_hint}.")
+    if not reasons:
+        reasons.append("Low density of fast mana, tutors, and combo pieces keeps this closer to lower-power brackets.")
+
+    return {
+        "bracket": best["bracket"],
+        "bracket_name": best["name"],
+        "source": "inferred",
+        "confidence": round(min(1.0, 0.3 + confidence_gap / 4.0), 3),
+        "signals": {
+            **signal_counts,
+            "game_changer_cards": gc_rows,
+            "speed_hint": speed_hint,
+            "power_intensity": round(power_intensity, 3),
+        },
+        "reasoning": reasons[:4],
+        "score_table": score_rows,
+    }
+
+
+def validate_deck(
+    cards: List[CardEntry],
+    commander: str | None,
+    card_map: Dict[str, Dict],
+    bracket: int | None,
+    sim_summary: Dict | None = None,
+    tagged_cards: List[CardEntry] | None = None,
+) -> tuple[list[str], list[str], dict]:
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -305,7 +453,12 @@ def validate_deck(cards: List[CardEntry], commander: str | None, card_map: Dict[
         if entry.section == "companion" and entry.name in banned_comp:
             errors.append(f"Banned as companion: {entry.name}")
 
-    main_entries = _deck_main_entries(cards)
+    inferred = None
+    if bracket is None:
+        inferred = infer_bracket(cards, commander, card_map, sim_summary=sim_summary, tagged_cards=tagged_cards)
+        bracket = int(inferred.get("bracket", 3) or 3)
+
+    main_entries = _deck_main_entries(tagged_cards or cards)
     game_changers = set(_load_json("game_changers.json", {}).get("cards", []))
     gc_count, gc_rows = _sum_by_names(main_entries, game_changers)
     bracket_limits = _load_json("brackets.json", {}).get("limits", {}) or {}
@@ -353,6 +506,8 @@ def validate_deck(cards: List[CardEntry], commander: str | None, card_map: Dict[
     bracket_report = {
         "bracket": bracket,
         "bracket_name": profile.get("name", f"Bracket {bracket}"),
+        "source": "inferred" if inferred else "provided",
+        "inference": inferred or {},
         "game_changers_count": gc_count,
         "game_changers_limit": gc_limit,
         "violations": [],

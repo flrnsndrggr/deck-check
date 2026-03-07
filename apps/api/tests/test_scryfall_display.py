@@ -271,3 +271,46 @@ def test_card_display_respects_art_preference(monkeypatch):
     assert svc.card_display(base, art_preference="clean")["normal"] == "newest-n"
     assert svc.card_display(base, art_preference="showcase")["normal"] == "showcase-n"
     assert svc.card_display(base, art_preference="newest")["normal"] == "newest-n"
+
+
+def test_original_art_preference_uses_earliest_printing_even_if_not_regular_modern(monkeypatch):
+    svc = CardDataService(db_path=":memory:")
+
+    def fake_candidates(self, card):
+        return [
+            {
+                "name": "Swords to Plowshares",
+                "set_type": "promo",
+                "games": ["paper"],
+                "released_at": "1997-01-01",
+                "frame": "1997",
+                "border_color": "black",
+                "full_art": False,
+                "promo": True,
+                "promo_types": ["judge"],
+                "frame_effects": [],
+                "image_uris": {"small": "early-s", "normal": "early-n", "art_crop": "early-a"},
+                "scryfall_uri": "https://scryfall.com/early",
+                "set": "pjgp",
+            },
+            {
+                "name": "Swords to Plowshares",
+                "set_type": "masters",
+                "games": ["paper"],
+                "released_at": "2020-01-01",
+                "frame": "2015",
+                "border_color": "black",
+                "full_art": False,
+                "promo": False,
+                "promo_types": [],
+                "frame_effects": [],
+                "image_uris": {"small": "late-s", "normal": "late-n", "art_crop": "late-a"},
+                "scryfall_uri": "https://scryfall.com/late",
+                "set": "2xm",
+            },
+        ]
+
+    monkeypatch.setattr(CardDataService, "_get_print_candidates", fake_candidates)
+    base = {"name": "Swords to Plowshares", "oracle_id": "oid-stp", "set_type": "masters"}
+
+    assert svc.card_display(base, art_preference="original")["normal"] == "early-n"

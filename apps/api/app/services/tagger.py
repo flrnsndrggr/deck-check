@@ -103,6 +103,17 @@ UNIVERSAL_TAG_GROUPS = {
     ],
 }
 
+GLOBAL_PREFIX_TAGS = set(
+    UNIVERSAL_TAG_GROUPS["core_function"]
+    + UNIVERSAL_TAG_GROUPS["pace_modifiers"]
+    + UNIVERSAL_TAG_GROUPS["interaction_detail"]
+)
+
+DECK_PREFIX_TAGS = set(
+    UNIVERSAL_TAG_GROUPS["structure"]
+    + UNIVERSAL_TAG_GROUPS["archetype_axes"]
+)
+
 TAG_PARENT_RELATIONS = {
     "#FastMana": "#Ramp",
     "#Ritual": "#Ramp",
@@ -185,6 +196,11 @@ def _display_type_label(token: str) -> str:
     return "-".join(part.capitalize() for part in token.split("-"))
 
 
+def _subtype_theme_tag(label: str) -> str:
+    core = re.sub(r"[^A-Za-z0-9]", "", str(label or ""))
+    return f"#{core}Typal" if core else "#Typal"
+
+
 def compute_type_theme_profile(cards: List[CardEntry], card_map: Dict[str, Dict]) -> Dict[str, object]:
     card_type_counts: Counter = Counter()
     supertype_counts: Counter = Counter()
@@ -212,24 +228,37 @@ def compute_type_theme_profile(cards: List[CardEntry], card_map: Dict[str, Dict]
             if "enchantment" in card_types:
                 enchantment_subtype_counts[token] += qty
 
+    total_creature_subtypes = sum(creature_subtype_counts.values())
     dominant_creature = creature_subtype_counts.most_common(1)
     dominant_creature_subtype = None
+    deck_theme_tags: List[str] = []
     if dominant_creature:
         subtype, count = dominant_creature[0]
+        share = (count / total_creature_subtypes) if total_creature_subtypes else 0.0
         if count >= 6:
-            dominant_creature_subtype = {"name": _display_type_label(subtype), "count": count}
+            dominant_creature_subtype = {"name": _display_type_label(subtype), "count": count, "share": round(share, 3)}
+            if share >= 0.4 or count >= 8:
+                deck_theme_tags.append(_subtype_theme_tag(dominant_creature_subtype["name"]))
 
     package_signals: List[str] = []
     if dominant_creature_subtype:
         package_signals.append(f"{dominant_creature_subtype['name']} is the main creature subtype package ({dominant_creature_subtype['count']} cards).")
+    if deck_theme_tags:
+        package_signals.append(f"{deck_theme_tags[0]} is strong enough to act as a deck-level theme tag.")
     if artifact_subtype_counts.get("equipment", 0) >= 4:
         package_signals.append(f"Equipment density is meaningful ({artifact_subtype_counts['equipment']} cards), which is strong Voltron signal.")
+        deck_theme_tags.append("#EquipmentPackage")
     if enchantment_subtype_counts.get("aura", 0) >= 4:
         package_signals.append(f"Aura density is meaningful ({enchantment_subtype_counts['aura']} cards), which often supports Voltron or enchantress plans.")
+        deck_theme_tags.append("#AuraPackage")
     if enchantment_subtype_counts.get("shrine", 0) >= 3:
         package_signals.append(f"Shrine count is high enough to act as a dedicated subtype package ({enchantment_subtype_counts['shrine']} cards).")
+        deck_theme_tags.append("#ShrinePackage")
     if enchantment_subtype_counts.get("background", 0) >= 1:
         package_signals.append("Background appears in the command package, which is a meaningful deck-construction signal.")
+        deck_theme_tags.append("#BackgroundPackage")
+
+    deck_theme_tags = list(dict.fromkeys(deck_theme_tags))
 
     return {
         "card_types": [{"name": _display_type_label(name), "count": count} for name, count in card_type_counts.most_common(6)],
@@ -237,6 +266,8 @@ def compute_type_theme_profile(cards: List[CardEntry], card_map: Dict[str, Dict]
         "subtypes": [{"name": _display_type_label(name), "count": count} for name, count in subtype_counts.most_common(8)],
         "creature_subtypes": [{"name": _display_type_label(name), "count": count} for name, count in creature_subtype_counts.most_common(6)],
         "dominant_creature_subtype": dominant_creature_subtype,
+        "deck_theme_tags": deck_theme_tags,
+        "primary_deck_theme_tag": deck_theme_tags[0] if deck_theme_tags else "",
         "package_signals": package_signals,
     }
 
@@ -393,6 +424,19 @@ def _tokenize(txt: str) -> List[str]:
     return re.findall(r"[a-zA-Z]{3,}", txt.lower())
 
 
+def _tag_output_token(tag: str, use_global_prefix: bool) -> str:
+    base = str(tag or "").strip()
+    if not base.startswith("#"):
+        return base
+    if not use_global_prefix:
+        return base
+    if base in GLOBAL_PREFIX_TAGS:
+        return f"#!{base[1:]}"
+    if base in DECK_PREFIX_TAGS or base.endswith("Typal") or base.endswith("Package"):
+        return base
+    return base
+
+
 def _signal_score(joined: str, freq: Counter, signal: str) -> float:
     if " " in signal:
         return float(joined.count(signal))
@@ -502,8 +546,11 @@ def tag_cards(
     _normalise_relations(cards)
 
     lines = []
-    prefix = "#!" if use_global_prefix else "#"
     for c in cards:
-        tag_tokens = [f"{prefix}{t[1:]}" for t in sorted(set(c.tags))]
+        unique_tags = sorted(set(c.tags))
+        global_tags = [tag for tag in unique_tags if _tag_output_token(tag, use_global_prefix).startswith("#!")]
+        deck_tags = [tag for tag in unique_tags if not _tag_output_token(tag, use_global_prefix).startswith("#!")]
+        ordered_tags = global_tags + deck_tags
+        tag_tokens = [_tag_output_token(tag, use_global_prefix) for tag in ordered_tags]
         lines.append(f"{c.qty} {c.name}" + (" " + " ".join(tag_tokens) if tag_tokens else ""))
     return cards, archetypes, lines

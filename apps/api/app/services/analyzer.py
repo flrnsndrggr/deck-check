@@ -1685,7 +1685,50 @@ def _deck_name_anchor(name: str | None) -> str:
     return tokens[0]
 
 
-def _dominant_deck_name_theme(cards: List[CardEntry], primary_plan: str) -> str | None:
+def _dynamic_theme_label(theme_tag: str, type_profile: Dict | None = None) -> str:
+    if theme_tag in DECK_NAME_THEME_LABELS:
+        return DECK_NAME_THEME_LABELS[theme_tag]
+    if theme_tag.endswith("Typal"):
+        dominant = (type_profile or {}).get("dominant_creature_subtype") or {}
+        subtype_name = str(dominant.get("name") or "").strip()
+        if subtype_name:
+            if subtype_name.endswith("s"):
+                return subtype_name
+            return f"{subtype_name}s"
+    if theme_tag == "#EquipmentPackage":
+        return "Equipment"
+    if theme_tag == "#AuraPackage":
+        return "Auras"
+    if theme_tag == "#ShrinePackage":
+        return "Shrines"
+    if theme_tag == "#BackgroundPackage":
+        return "Backgrounds"
+    return ""
+
+
+def _dynamic_theme_hooks(theme_tag: str, type_profile: Dict | None = None) -> List[str]:
+    if theme_tag in DECK_NAME_THEME_HOOKS:
+        return DECK_NAME_THEME_HOOKS[theme_tag]
+    if theme_tag.endswith("Typal"):
+        dominant = (type_profile or {}).get("dominant_creature_subtype") or {}
+        subtype_name = str(dominant.get("name") or "").strip()
+        if subtype_name:
+            return [f"{subtype_name} Muster", f"{subtype_name} Roost", f"{subtype_name} Parliament"]
+    if theme_tag == "#EquipmentPackage":
+        return ["Arsenal", "War Chest", "Steel Rack"]
+    if theme_tag == "#AuraPackage":
+        return ["Halo Thread", "Silken Ward", "Charmwork"]
+    if theme_tag == "#ShrinePackage":
+        return ["Shrine Circuit", "Sanctum Line", "Ritehouse"]
+    if theme_tag == "#BackgroundPackage":
+        return ["Origin Story", "Backstory", "Second Act"]
+    return []
+
+
+def _dominant_deck_name_theme(cards: List[CardEntry], primary_plan: str, type_profile: Dict | None = None) -> str | None:
+    theme_tags = list((type_profile or {}).get("deck_theme_tags") or [])
+    if theme_tags:
+        return str(theme_tags[0])
     counts: Counter = Counter()
     for c in cards:
         if c.section not in {"deck", "commander"}:
@@ -1711,9 +1754,10 @@ def _generate_deck_name(
     combo_intel: Dict | None,
     bracket: int,
     importance: List[Dict] | None = None,
+    type_profile: Dict | None = None,
 ) -> str:
     primary_plan = str(intent.get("primary_plan") or "Value Midrange")
-    dominant_theme = _dominant_deck_name_theme(cards, primary_plan)
+    dominant_theme = _dominant_deck_name_theme(cards, primary_plan, type_profile=type_profile)
     anchor_source = commander
     if not anchor_source:
         preferred_cards = [x.get("card") for x in (importance or []) if x.get("card")]
@@ -1731,11 +1775,11 @@ def _generate_deck_name(
     )
 
     if bracket >= 4:
-        label = DECK_NAME_THEME_LABELS.get(dominant_theme or "", "") or DECK_NAME_PLAN_LABELS.get(primary_plan, "Value")
+        label = _dynamic_theme_label(dominant_theme or "", type_profile=type_profile) or DECK_NAME_PLAN_LABELS.get(primary_plan, "Value")
         name = f"{anchor} {label}".strip()
         return re.sub(r"\s+", " ", name)
 
-    hook_options = DECK_NAME_THEME_HOOKS.get(dominant_theme or "", []) or DECK_NAME_PLAN_HOOKS.get(primary_plan, [])
+    hook_options = _dynamic_theme_hooks(dominant_theme or "", type_profile=type_profile) or DECK_NAME_PLAN_HOOKS.get(primary_plan, [])
     if primary_plan == "Combo Assembly" and (combo_intel or {}).get("matched_variants"):
         hook_options = hook_options + ["Breakfast", "Assembly Line"]
     if not hook_options:
@@ -2018,6 +2062,7 @@ def analyze(
         combo_intel=combo_intel,
         bracket=bracket,
         importance=top,
+        type_profile=type_profile,
     )
 
     return {

@@ -66,6 +66,8 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      - key: ADMIN_EMAILS
+        value: florian.sonderegger@me.com
 
   - type: worker
     name: deck-check-worker
@@ -125,6 +127,8 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      - key: ADMIN_EMAILS
+        value: florian.sonderegger@me.com
 
   - type: cron
     name: deck-check-scheduler
