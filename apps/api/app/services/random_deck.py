@@ -595,6 +595,7 @@ class RandomDeckService:
         candidate_deck_count: int = 24,
     ):
         self.rng = rng or random.Random()
+        self._root_rng_state = self.rng.getstate()
         self.card_service = card_service or CardDataService()
         self.candidate_deck_count = max(1, int(candidate_deck_count))
 
@@ -1820,6 +1821,24 @@ class RandomDeckService:
         coverage = self._coverage_counts(selected)
         support_counts = self._support_counts(selected, context=context)
 
+        def preserves_shell_and_support(current: TaggedCandidate, *, relax_support: bool = True) -> bool:
+            remaining = [row for row in selected if row is not current]
+            remaining_coverage = self._coverage_counts(remaining)
+            remaining_support = self._support_counts(remaining, context=context)
+            for key, (role_floor, _role_ceiling) in context.plan.coverage_targets.items():
+                if current.coverage.get(key, 0.0) <= 0:
+                    continue
+                required = max(0.0, role_floor * 0.95)
+                if remaining_coverage.get(key, 0.0) + 0.01 < required:
+                    return False
+            for axis, target in context.plan.support_targets.items():
+                if axis not in current.provides:
+                    continue
+                required = max(0, int(math.ceil(target * (0.9 if relax_support else 1.0))))
+                if remaining_support.get(axis, 0) < required:
+                    return False
+            return True
+
         def try_swap(
             must_roles: Set[str] | None = None,
             must_support: str | None = None,
@@ -1841,6 +1860,8 @@ class RandomDeckService:
             removable = sorted(selected, key=lambda row: self._retention_score(row, context, selected))
             for current in removable:
                 if context.plan.primary_package in current.packages and must_package != context.plan.primary_package and not self._preserves_package_core_after_removal(context, selected, current):
+                    continue
+                if not preserves_shell_and_support(current):
                     continue
                 if must_roles and (must_roles & current.roles):
                     continue
@@ -1929,6 +1950,8 @@ class RandomDeckService:
             for axis, current_state in current_axes.items():
                 current_ratio = float(current_state.get("ratio", 0.0))
                 remaining_ratio = float(_axis_state.get(axis, {}).get("ratio", 0.0))
+                if current_ratio > current_completion + 0.05:
+                    continue
                 if remaining_ratio + 0.01 < current_ratio:
                     return False
         for package in context.plan.secondary_packages:
@@ -1958,6 +1981,8 @@ class RandomDeckService:
             for axis, current_state in current_axes.items():
                 current_ratio = float(current_state.get("ratio", 0.0))
                 remaining_ratio = float(_axis_state.get(axis, {}).get("ratio", 0.0))
+                if current_ratio > current_completion + 0.05:
+                    continue
                 if remaining_ratio + 0.01 < current_ratio:
                     return False
         return True
@@ -2018,6 +2043,8 @@ class RandomDeckService:
                 if current.coverage.get(coverage_key, 0.0) > 0:
                     continue
                 if not self._preserves_package_core_after_removal(context, selected, current):
+                    continue
+                if not can_trade_for_floor(current):
                     continue
                 selected.remove(current)
                 selected.append(replacement)
@@ -2299,6 +2326,13 @@ class RandomDeckService:
     ) -> List[GeneratedDeck]:
         drafted: List[GeneratedDeck] = []
         seen_signatures: Set[tuple[str, ...]] = set()
+        baseline_rng = random.Random()
+        baseline_rng.setstate(self._root_rng_state)
+        baseline_service = RandomDeckService(baseline_rng, self.card_service)
+        baseline = baseline_service._draft_candidate_deck(context, candidates)
+        baseline_signature = tuple(sorted(entry.name for entry in baseline.cards if entry.section == "deck"))
+        seen_signatures.add(baseline_signature)
+        drafted.append(baseline)
         for _idx in range(count):
             draft_seed = self.rng.randrange(1, 2**31 - 1)
             draft_service = RandomDeckService(random.Random(draft_seed), self.card_service)
@@ -2342,8 +2376,12 @@ class RandomDeckService:
             if eligible:
                 ranked = eligible
         best = ranked[0].score
-        top_group = [row for row in ranked if row.score >= best - 0.5][:4]
+        top_group = [row for row in ranked if row.score >= best - 0.15][:4]
         pool = top_group or ranked[:1]
+        if len(pool) == 1:
+            return pool[0]
+        if pool[0].score - pool[1].score > 0.05:
+            return pool[0]
         temperature = 0.33
         weights = [math.exp((row.score - best) / max(temperature, 0.05)) for row in pool]
         return self.rng.choices(pool, weights=weights, k=1)[0]

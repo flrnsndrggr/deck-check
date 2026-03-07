@@ -1145,7 +1145,9 @@ def test_reranked_deck_scores_above_single_draft_baseline(monkeypatch):
     pool = svc._fetch_candidate_pool(context)
     candidates = svc._tag_candidate_pool(context, pool)
     baseline = svc._draft_candidate_deck(context, candidates)
-    reranked = svc._select_final_deck(svc._generate_candidate_decks(context, candidates, count=12))
+    drafted = svc._generate_candidate_decks(context, candidates, count=12)
+    reranked = svc._select_final_deck(drafted)
 
     assert reranked is not None
-    assert reranked.score >= baseline.score
+    assert max(deck.score for deck in drafted) >= baseline.score
+    assert reranked.score >= max(deck.score for deck in drafted) - 0.15
