@@ -141,8 +141,16 @@ export default function ConsentManager() {
         </div>
 
         <div className="consent-drawer-body stack">
-          <div className="mini-card" data-surface="2">
-            <div className="mini-label">Strictly necessary</div>
+          <div
+            className="mini-card"
+            data-surface="2"
+            title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
+            aria-label="Strictly necessary. The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
+          >
+            <div className="mini-label-row">
+              <div className="mini-label">Strictly necessary</div>
+              <span className="mini-tooltip-trigger" aria-hidden="true" title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state.">?</span>
+            </div>
             <div className="mini-value">Always active</div>
             <p className="control-help">Required for authentication, CSRF protection, security, and core app state.</p>
           </div>
