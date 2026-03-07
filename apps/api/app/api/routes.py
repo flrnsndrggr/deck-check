@@ -115,6 +115,7 @@ from app.workers.tasks import get_vector_backend_status, run_simulation_task
 from app.core.config import settings
 
 router = APIRouter(prefix="/api")
+RANDOM_BANNER_ART_QUERY = "game:paper -is:token -is:funny unique:art"
 
 
 def _project_summary(row: Project) -> ProjectSummary:
@@ -630,7 +631,7 @@ def run_sim(req: SimRunRequest):
     payload["color_identity_size"] = len(commander_colors) if commander_names else 3
     payload["commanders"] = commander_names
     payload["commander"] = commander_display_name(commander_names) or req.commander
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
     payload["cards"] = enrich_sim_cards(req.cards, card_map, commander_names)
     payload["combo_variants"] = combo_intel.get("matched_variants", [])
     payload["combo_source_live"] = not bool(combo_intel.get("warnings"))
@@ -697,14 +698,7 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     _, _, bracket_report = _validate_deck_compat(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
     primary_commander = primary_commander_name(commander_names) or req.commander
     commander_display = commander_display_name(commander_names) or req.commander
-    combo_service = ComboIntelService()
-    try:
-        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
-    except TypeError as exc:
-        # Keep the route compatible with narrower monkeypatched test doubles.
-        if "deck_colors" not in str(exc):
-            raise
-        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names)
+    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)
     out = analyze(
         req.cards,
         req.sim_summary,
@@ -762,6 +756,7 @@ def strictly_better(req: StrictlyBetterRequest):
         selected_card=req.selected_card,
         commander=commander_display_name(commander_names_from_cards(req.cards, fallback_commander=req.commander)) or req.commander,
         budget_max_usd=req.budget_max_usd,
+        explain=req.explain,
     )
 
 
@@ -770,6 +765,21 @@ def cards_display(names: str, art_preference: str = "clean"):
     requested = [n.strip() for n in names.split(",") if n.strip()]
     display = CardDataService().get_display_by_names(requested, art_preference=art_preference)
     return {"cards": display}
+
+
+@router.get("/cards/random-art")
+def random_art(art_preference: str = "clean"):
+    try:
+        payload = CardDataService().get_random_display(RANDOM_BANNER_ART_QUERY, art_preference=art_preference)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Random banner art could not be fetched.") from exc
+    if not payload.get("art_crop"):
+        raise HTTPException(status_code=404, detail="Random banner art is unavailable.")
+    return {
+        "name": payload.get("name") or "",
+        "art_crop": payload.get("art_crop"),
+        "scryfall_uri": payload.get("scryfall_uri") or "",
+    }
 
 
 @router.post("/guides/generate", response_model=GuideResponse)

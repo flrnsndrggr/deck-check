@@ -845,6 +845,349 @@ body {
   color: var(--danger);
 }
 
+/* Workspace banner base styles. The final enforcement block lives at EOF. */
+:root {
+  --workspace-banner-height: 144px;
+  --banner-blue-strong: #0b46b7;
+  --banner-blue-base: #155eef;
+  --banner-blue-soft: #5b8cff;
+  --banner-blue-strong: color-mix(in srgb, var(--accent-primary) 82%, #09101d);
+  --banner-blue-base: color-mix(in srgb, var(--accent-primary) 92%, #0e1b33);
+  --banner-blue-soft: color-mix(in srgb, var(--accent-primary) 78%, #ffffff 14%);
+}
+
+.ui-shell,
+.ui-shell.detail-open {
+  grid-template-rows: var(--workspace-banner-height) minmax(0, 1fr);
+}
+
+.ui-sidebar,
+.ui-detail,
+.ui-main {
+  grid-row: 2;
+}
+
+.workspace-banner-desktop {
+  display: contents;
+}
+
+.workspace-banner-mobile {
+  display: none;
+}
+
+.workspace-banner-pane {
+  position: relative;
+  min-width: 0;
+  height: var(--workspace-banner-height);
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(135deg, var(--banner-blue-strong), var(--banner-blue-soft));
+}
+
+.workspace-banner-pane-sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.workspace-banner-pane-detail {
+  grid-column: 2;
+  grid-row: 1;
+  --banner-solid-width: 240px;
+  display: grid;
+  grid-template-columns: minmax(180px, var(--banner-solid-width)) minmax(0, 1fr);
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.workspace-banner-pane-main {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.workspace-banner-solid {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  padding: 18px 18px 20px;
+  background: linear-gradient(135deg, var(--banner-blue-strong), var(--banner-blue-base) 62%, var(--banner-blue-soft));
+}
+
+.workspace-banner-solid-title {
+  grid-column: 1;
+}
+
+.workspace-banner-solid-only {
+  height: 100%;
+}
+
+.workspace-banner-main-grid {
+  display: grid;
+  height: 100%;
+  min-width: 0;
+}
+
+.workspace-banner-main-cell {
+  --banner-solid-width: 240px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(160px, var(--banner-solid-width)) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.workspace-banner-main-cell + .workspace-banner-main-cell {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.workspace-banner-insight-cell:not(.is-open) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.workspace-banner-title {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: #fff;
+  font-family: var(--font-display), Georgia, serif;
+  font-size: clamp(22px, 2vw, 32px);
+  font-weight: 650;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-banner-pane-detail .workspace-banner-title {
+  font-size: clamp(20px, 1.45vw, 28px);
+}
+
+.workspace-banner-insight-cell .workspace-banner-title {
+  font-size: clamp(18px, 1.15vw, 24px);
+}
+
+.workspace-banner .wordmark {
+  color: #fff;
+  font-size: clamp(22px, 1.65vw, 30px);
+}
+
+.workspace-banner .wordmark-text,
+.workspace-banner .wordmark-dot {
+  color: #fff;
+}
+
+.workspace-banner .wordmark-glyph {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  box-shadow: none;
+}
+
+.workspace-banner-art-zone {
+  position: relative;
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--banner-blue-base), var(--banner-blue-soft));
+}
+
+.workspace-banner-art-media {
+  position: absolute;
+  inset: 0;
+  display: grid;
+}
+
+.workspace-banner-art-media.is-split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-banner-art-media.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-banner-art-panel {
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: saturate(0.96) contrast(1.03);
+}
+
+.workspace-banner-art-gradient {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(21, 94, 239, 0.96) 0%,
+      rgba(21, 94, 239, 0.86) 12%,
+      rgba(21, 94, 239, 0.66) 32%,
+      rgba(21, 94, 239, 0.42) 58%,
+      rgba(21, 94, 239, 0.2) 100%
+    );
+}
+
+.sidebar-brand {
+  padding: 8px 2px 0;
+  border: 0;
+  background: transparent;
+}
+
+.sidebar-brand[data-surface="1"] {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ui-sidebar {
+  padding-top: 14px;
+}
+
+.ui-detail,
+.ui-shell.detail-open .ui-detail {
+  padding-top: 14px;
+}
+
+.ui-main {
+  padding-top: 14px;
+}
+
+.panel-title-row {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.panel-heading-group {
+  gap: 8px;
+}
+
+.outcome-header {
+  gap: 12px;
+}
+
+.panel-kicker {
+  display: none;
+}
+
+.mobile-workspace-bar {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --workspace-banner-height: 128px;
+  }
+
+  .workspace-banner-solid {
+    padding: 16px 16px 18px;
+  }
+
+  .workspace-banner-pane-detail {
+    --banner-solid-width: 220px;
+  }
+
+  .workspace-banner-main-cell {
+    --banner-solid-width: 210px;
+  }
+}
+
+@media (max-width: 820px) {
+  :root {
+    --workspace-banner-height: 108px;
+  }
+
+  .workspace-banner-desktop {
+    display: none;
+  }
+
+  .workspace-banner-mobile {
+    display: block;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .workspace-banner-pane-mobile {
+    --banner-solid-width: 220px;
+    height: var(--workspace-banner-height);
+    display: grid;
+    grid-template-columns: minmax(180px, var(--banner-solid-width)) minmax(0, 1fr);
+  }
+
+  .ui-shell,
+  .ui-shell.detail-open {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--workspace-banner-height) auto minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .mobile-workspace-bar {
+    display: grid;
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 10px 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ui-sidebar,
+  .ui-detail,
+  .ui-main {
+    grid-column: 1;
+    grid-row: 3;
+    height: 100%;
+    min-height: 0;
+    border-right: 0;
+    padding: 12px 12px 14px;
+  }
+
+  .ui-sidebar {
+    display: none;
+    overflow: hidden;
+  }
+
+  .ui-detail,
+  .ui-shell.detail-open .ui-detail {
+    display: none;
+    padding: 12px;
+  }
+
+  .ui-main {
+    display: none;
+    padding: 12px;
+  }
+
+  .ui-shell.mobile-pane-controls .workspace-banner-pane-mobile {
+    grid-template-columns: 1fr;
+  }
+
+  .ui-shell.mobile-pane-controls .ui-sidebar {
+    display: flex;
+  }
+
+  .ui-shell.mobile-pane-deck .ui-detail {
+    display: block;
+  }
+
+  .ui-shell.mobile-pane-views .ui-main {
+    display: block;
+  }
+
+  .workspace-banner-pane-mobile .workspace-banner-title {
+    font-size: clamp(22px, 7vw, 32px);
+  }
+
+  .workspace-banner-pane-mobile .workspace-banner-solid {
+    padding: 14px 14px 16px;
+  }
+
+  .account-launcher {
+    top: 12px;
+    right: 12px;
+  }
+}
+
 .list-compact {
   margin: 6px 0 0;
   padding-left: 20px;
@@ -3873,4 +4216,90 @@ body::after {
 
 .tone-bad {
   color: var(--danger);
+}
+/* Final workspace banner enforcement. Keep this block last so the legacy shell/mobile rules above do not win. */
+.ui-shell,
+.ui-shell.detail-open {
+  grid-template-rows: var(--workspace-banner-height) minmax(0, 1fr);
+}
+
+.ui-sidebar,
+.ui-detail,
+.ui-main {
+  grid-row: 2;
+}
+
+.mobile-workspace-bar {
+  display: none;
+}
+
+.workspace-banner-art-gradient {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(21, 94, 239, 0.96) 0%,
+      rgba(21, 94, 239, 0.86) 12%,
+      rgba(21, 94, 239, 0.66) 32%,
+      rgba(21, 94, 239, 0.42) 58%,
+      rgba(21, 94, 239, 0.2) 100%
+    );
+}
+
+@media (max-width: 820px) {
+  .ui-shell,
+  .ui-shell.detail-open {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--workspace-banner-height) auto minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .mobile-workspace-bar {
+    display: grid;
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 10px 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ui-sidebar,
+  .ui-detail,
+  .ui-main {
+    grid-column: 1;
+    grid-row: 3;
+    height: 100%;
+    min-height: 0;
+    border-right: 0;
+    padding: 12px 12px 14px;
+  }
+
+  .ui-sidebar {
+    display: none;
+    overflow: hidden;
+  }
+
+  .ui-detail,
+  .ui-shell.detail-open .ui-detail {
+    display: none;
+    padding: 12px;
+  }
+
+  .ui-main {
+    display: none;
+    padding: 12px;
+  }
+
+  .ui-shell.mobile-pane-controls .ui-sidebar {
+    display: flex;
+  }
+
+  .ui-shell.mobile-pane-deck .ui-detail {
+    display: block;
+  }
+
+  .ui-shell.mobile-pane-views .ui-main {
+    display: block;
+  }
 }

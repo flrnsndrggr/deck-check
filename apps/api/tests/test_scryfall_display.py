@@ -314,3 +314,21 @@ def test_original_art_preference_uses_earliest_printing_even_if_not_regular_mode
     base = {"name": "Swords to Plowshares", "oracle_id": "oid-stp", "set_type": "masters"}
 
     assert svc.card_display(base, art_preference="original")["normal"] == "early-n"
+
+
+def test_get_random_display_retries_until_art_crop(monkeypatch):
+    svc = CardDataService(db_path=":memory:")
+    seen = {"count": 0}
+
+    def fake_fetch_random_card(self, query):
+        seen["count"] += 1
+        assert query == "game:paper"
+        if seen["count"] == 1:
+            return {"name": "No Crop", "image_uris": {"small": "s", "normal": "n"}}
+        return {"name": "Has Crop", "image_uris": {"small": "s2", "normal": "n2", "art_crop": "a2"}}
+
+    monkeypatch.setattr(CardDataService, "fetch_random_card", fake_fetch_random_card)
+    out = svc.get_random_display("game:paper")
+    assert seen["count"] == 2
+    assert out["name"] == "Has Crop"
+    assert out["art_crop"] == "a2"
