@@ -92,7 +92,7 @@ CLASS_LIKE_SUBTYPES = {
 THEME_PATTERNS: Dict[str, Sequence[str]] = {
     "artifacts": ["artifact", "equipment", "treasure", "clue", "construct", "servo", "thopter"],
     "enchantments": ["enchantment", "aura", "background", "shrine", "saga", "constellation"],
-    "spellslinger": ["instant", "sorcery", "magecraft", "prowess", "copy target spell", "whenever you cast"],
+    "spellslinger": ["instant", "sorcery", "magecraft", "prowess", "copy target spell", "whenever you cast an instant or sorcery"],
     "reanimator": ["graveyard", "return target", "reanimate", "flashback", "escape", "unearth"],
     "tokens": ["create", "token", "populate"],
     "aristocrats": ["sacrifice", "dies", "when another creature dies", "whenever another creature dies"],
@@ -628,11 +628,28 @@ class RandomDeckService:
         return CardEntry(qty=1, name=name, section=section, tags=[], confidence={}, explanations={})
 
     def _fetch_named_card(self, name: str) -> Dict | None:
-        target = _safe_name(name)
-        if not target:
+        exact = _safe_name(name)
+        if not exact:
             return None
-        fetched = self.card_service.get_cards_by_name([target])
-        return fetched.get(target) or next(iter(fetched.values()), None)
+        probes = [str(name or "").strip(), exact]
+        seen: Set[str] = set()
+        for probe in probes:
+            probe = str(probe or "").strip()
+            if not probe or probe in seen:
+                continue
+            seen.add(probe)
+            fetched = self.card_service.get_cards_by_name([probe])
+            if fetched:
+                return fetched.get(probe) or fetched.get(_safe_name(probe)) or next(iter(fetched.values()), None)
+        return None
+
+    def _partner_with_target_name(self, primary_commander: Dict) -> str | None:
+        oracle = str(primary_commander.get("oracle_text") or "")
+        for line in oracle.splitlines():
+            match = re.search(r"partner with ([^(.\n]+)", line, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
 
     def _candidate_team_score(self, primary: Dict, secondary: Dict) -> float:
         if not primary or not secondary:
@@ -679,7 +696,8 @@ class RandomDeckService:
     def _secondary_commander(self, primary_commander: Dict) -> Dict | None:
         mode, value = partner_mode(primary_commander)
         if mode == "partner_with" and value:
-            return self._fetch_named_card(value)
+            raw_name = self._partner_with_target_name(primary_commander) or value
+            return self._fetch_named_card(raw_name)
         if mode == "partner":
             return self._random_partner_commander(primary_commander)
         if has_choose_a_background(primary_commander):
@@ -713,15 +731,23 @@ class RandomDeckService:
             for archetype, weight in archetypes.items():
                 mapped = ARCHETYPE_TO_PACKAGE.get(archetype)
                 if mapped == package:
-                    score += weight * 15.0
+                    score += weight * 8.0
             if package == "typal" and profile.get("subtype_anchor"):
-                score += 5.8
+                subtype_token = str(profile.get("subtype_anchor") or "").lower()
+                score += 7.2
+                if subtype_token and any(term in commander_text for term in (subtype_token, f"{subtype_token} creatures", "creature type", "chosen type", "kindred")):
+                    score += 4.4
+            if package == "blink" and "exile" in commander_text and "return it to the battlefield" in commander_text:
+                score += 6.0
+            if package == "aristocrats" and any(term in commander_text for term in ("whenever another creature dies", "whenever you sacrifice", "sacrifice another creature")):
+                score += 4.5
             if package == "voltron" and "combat" in profile["themes"]:
                 score += 1.2
             scores[package] = score
 
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         top_score = ranked[0][1] if ranked else 0.0
+        second_score = ranked[1][1] if len(ranked) > 1 else -999.0
         low_confidence = top_score < 4.5
         if low_confidence and profile.get("subtype_anchor"):
             primary_package = "typal"
@@ -729,6 +755,9 @@ class RandomDeckService:
         elif low_confidence:
             primary_package = _fallback_color_package("".join(combined_color_identity(commander_map, commander_names)))
             primary_score = max(top_score, 4.1)
+        elif top_score - second_score >= 2.0:
+            primary_package = ranked[0][0]
+            primary_score = top_score
         else:
             top_band = [(package, score) for package, score in ranked if score >= max(3.5, top_score * 0.72)]
             weights = [max(0.2, score) for _package, score in top_band]
@@ -1462,7 +1491,7 @@ class RandomDeckService:
 
         bridge_bonus = 0.0
         if candidate.coverage.get("bridge", 0.0) > 0:
-            bridge_bonus = min(1.5, candidate.coverage["bridge"] + (0.2 if role_keys and package_keys else 0.0))
+            bridge_bonus = min(1.5, candidate.coverage.get("bridge", 0.0) + (0.2 if role_keys and package_keys else 0.0))
 
         coverage_dimensions = sum(1 for value in candidate.coverage.values() if value > 0)
         role_compression_bonus = min(1.5, max(0, coverage_dimensions - 1) * 0.4)
@@ -1807,6 +1836,19 @@ class RandomDeckService:
                     break
                 support_counts = self._support_counts(selected)
 
+        def interaction_total() -> int:
+            return sum(1 for row in selected if "interaction" in row.roles)
+
+        while interaction_total() < 10:
+            if len(selected) < spell_target:
+                pick = self._pick_candidate(candidates, selected_names, context, selected, must_roles={"interaction"})
+                if pick is None:
+                    break
+                selected.append(pick)
+                selected_names.add(pick.entry.name)
+            elif not try_swap(must_roles={"interaction"}):
+                break
+
         return selected[:spell_target]
 
     def _score_generated_deck(self, context: DeckContext, selected: Sequence[TaggedCandidate]) -> tuple[float, Dict[str, Any]]:
@@ -2057,7 +2099,7 @@ class RandomDeckService:
             return None
         ranked = sorted(drafted, key=lambda row: row.score, reverse=True)
         best = ranked[0].score
-        top_group = [row for row in ranked if row.score >= best - 1.1][:6]
+        top_group = [row for row in ranked if row.score >= best - 0.5][:4]
         pool = top_group or ranked[:1]
         temperature = 0.33
         weights = [math.exp((row.score - best) / max(temperature, 0.05)) for row in pool]

@@ -1099,10 +1099,18 @@ def _activated_actions(state: GameState) -> List[Tuple[str, PermanentState, str]
             if action.kind == "mana_source" and permanent.tapped:
                 continue
             if action.kind == "sac_outlet":
-                has_fodder = bool(state.token_buckets) or any(
-                    perm.card.is_creature and not perm.card.is_commander and perm.permanent_id != permanent.permanent_id
-                    for perm in state.battlefield
-                )
+                def _is_disposable_fodder(perm: PermanentState) -> bool:
+                    if not perm.card.is_creature or perm.card.is_commander or perm.permanent_id == permanent.permanent_id:
+                        return False
+                    exec_ops = set(getattr(perm.card_exec.coverage_summary, "executable", ()) or ())
+                    pure_death_payoff = (
+                        "death_trigger" in exec_ops
+                        and exec_ops & {"drain_all_opponents", "burn_all_opponents", "burn_single_target"}
+                        and not exec_ops & {"create_tokens", "recursion", "reanimate", "mill_single_target", "mill_all_opponents"}
+                    )
+                    return not pure_death_payoff
+
+                has_fodder = bool(state.token_buckets) or any(_is_disposable_fodder(perm) for perm in state.battlefield)
                 has_death_payoff = any("death_trigger" in perm.card_exec.coverage_summary.executable for perm in state.battlefield)
                 if not (has_fodder and has_death_payoff):
                     continue
@@ -1185,6 +1193,7 @@ def simulate_one(
     exec_lookup = _exec_lookup(cards, commander_cards, compiled_exec_lookup)
     fingerprint = compile_deck_fingerprint(cards, commander_cards, exec_lookup)
     winlines = compile_winlines(cards, fingerprint)
+    normalized_combo_variants = _normalize_combo_variants(combo_variants)
     if capture_trace:
         hand, mulligans_taken, mulligan_steps = london_mulligan(
             deck,

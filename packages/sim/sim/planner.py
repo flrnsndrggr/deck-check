@@ -217,11 +217,11 @@ def choose_turn_intent(
 ) -> str:
     best_line = min(winlines or [Winline(kind=fingerprint.primary_plan)], key=lambda line: winline_distance(state, hand, line))
     best_distance = winline_distance(state, hand, best_line)
+    board_presence = len(state.battlefield) + sum(state.token_buckets.values())
     if threat_model and opponent_table is not None:
         incoming_pressure = expected_incoming_pressure(opponent_table, state, state.turn)
         if state.self_life - incoming_pressure <= 10.0 and best_line.kind in {"combat", "poison", "drain"}:
             return "race"
-        board_presence = len(state.battlefield) + sum(state.token_buckets.values())
         if board_presence >= 4 and fingerprint.protection_density > 0.05 and any(tag in _tags(hand) for tag in ("#Protection", "#Counter")):
             wipe_risk = max(
                 (
@@ -238,6 +238,8 @@ def choose_turn_intent(
             )
             if wipe_risk >= 0.42:
                 return "protect"
+    if best_line.kind in {"combat", "poison", "drain"} and board_presence >= 4 and best_distance <= 1.0:
+        return "convert" if not threat_model else "race"
     if best_distance <= 0.75:
         if threat_model and fingerprint.protection_density > 0.06 and any(tag in _tags(hand) for tag in ("#Protection", "#Counter")):
             return "protect"

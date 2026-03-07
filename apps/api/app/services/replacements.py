@@ -323,7 +323,7 @@ def _comparable_utility_roles(normalized_roles: Set[str], replacement_family: Re
         "mana-land": {"#Ramp", "#Fixing"},
         "mana-dork": {"#Ramp", "#Fixing"},
         "ritual": {"#Ramp"},
-        "counterspell": {"#Counter", "#StackInteraction"},
+        "counterspell": {"#Counter"},
         "spot-removal": {"#Removal", "#SpotRemoval"},
         "draw": {"#Draw"},
         "tutor": {"#Tutor"},
@@ -384,6 +384,8 @@ def _oracle_theme_mode(theme_key: str, text: str, main_types: Tuple[MainType, ..
             return "recursion"
         if subtype_key and "create" in text and "token" in text and _token_mentions_theme(text, theme_key):
             return "producer"
+        if any(marker in text for marker in ("choose a creature type", "chosen type", "shares a creature type", "creatures you control of the chosen type")):
+            return "payoff"
         if subtype_key and subtype_key in _collapsed_text(text):
             return "payoff"
         return None
@@ -525,9 +527,14 @@ def _etb_tapped(text: str) -> bool:
     return bool(re.search(r"enters? tapped", text))
 
 
-def _castability_burden(mana_cost: ManaCostProfile) -> float:
+def _castability_burden(mana_cost: ManaCostProfile, commander_color_identity: Set[str]) -> float:
     colored_pips = sum(mana_cost.pip_counts.values())
-    return float(mana_cost.distinct_colors_required) + (0.25 * float(colored_pips))
+    if colored_pips <= 0:
+        return 0.0
+    if len(commander_color_identity) <= 1:
+        return float(mana_cost.distinct_colors_required)
+    repeated_pips = max(0, colored_pips - mana_cost.distinct_colors_required)
+    return float(mana_cost.distinct_colors_required) + (0.2 * float(repeated_pips))
 
 
 def _mana_line_prefix(text: str) -> str:
@@ -590,6 +597,17 @@ def _returns_to_hand_tutor(text: str) -> bool:
     return "search your library" in text and "put it into your hand" in text
 
 
+def _is_modal_or_choice_card(text: str) -> bool:
+    lowered = text.lower()
+    if re.search(r"\bchoose (one|two|three|four|five)\b", lowered):
+        return True
+    if "choose one or more" in lowered:
+        return True
+    if "•" in lowered or " — " in lowered and "choose" in lowered:
+        return True
+    return False
+
+
 def _destroy_artifact_enchantment_scope(text: str) -> bool:
     return any(
         phrase in text
@@ -615,6 +633,10 @@ def _resolve_replacement_class(
     unsupported: List[str] = []
     type_sig = "+".join(main_types)
 
+    if _is_modal_or_choice_card(text):
+        unsupported.append("Modal or choose-one style text is not supported for strict comparison.")
+        return replacement_family, comparison_class, comparison_data, evidence, unsupported
+
     if (
         "{t}" in text
         and _mana_output_amount(text) is not None
@@ -635,7 +657,7 @@ def _resolve_replacement_class(
                 "life_cost": 1.0 if _has_life_cost(text) else 0.0,
                 "sacrifice_cost": 1.0 if _has_sacrifice_cost(text) else 0.0,
                 "summoning_delay": _summoning_delay(main_types, text),
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
             evidence.append("Repeatable mana source with supported output and tempo axes.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
@@ -654,7 +676,7 @@ def _resolve_replacement_class(
             comparison_data = {
                 "mana_value": mana_cost.mana_value,
                 "scope_rank": 2 if scope == "any" else 1,
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
             evidence.append("Hard counter with supported target scope.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
@@ -668,7 +690,7 @@ def _resolve_replacement_class(
             comparison_data = {
                 "mana_value": mana_cost.mana_value,
                 "effect_rank": 1,
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
             evidence.append("Simple artifact/enchantment removal spell with supported target domain.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
@@ -682,21 +704,31 @@ def _resolve_replacement_class(
             comparison_data = {
                 "mana_value": mana_cost.mana_value,
                 "effect_rank": 1,
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
             evidence.append("Simple creature destruction spell with supported target domain.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
 
     if any(token in main_types for token in ("instant", "sorcery")) and _returns_to_hand_tutor(text):
-        if "artifact or enchantment" in text or "artifact, enchantment" in text:
+        if any(
+            phrase in text
+            for phrase in (
+                "artifact or enchantment",
+                "artifact, enchantment",
+                "aura or equipment",
+                "equipment or aura",
+                "aura or equipment card",
+                "equipment or aura card",
+            )
+        ):
             replacement_family = "tutor"
             comparison_class = "tutor:artifact-or-enchantment:to-hand"
             comparison_data = {
                 "mana_value": mana_cost.mana_value,
                 "destination_rank": 1,
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
-            evidence.append("Fixed artifact/enchantment tutor to hand.")
+            evidence.append("Fixed artifact/enchantment or aura/equipment tutor to hand.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
         unsupported.append("Tutor domain is not in a supported strict-comparison class.")
 
@@ -708,7 +740,7 @@ def _resolve_replacement_class(
             comparison_data = {
                 "mana_value": mana_cost.mana_value,
                 "cards_drawn": float(draw_count),
-                "cast_color_burden": _castability_burden(mana_cost),
+                "cast_color_burden": _castability_burden(mana_cost, deck_context.commander_color_identity),
             }
             evidence.append("Fixed-count draw spell with supported mana and volume axes.")
             return replacement_family, comparison_class, comparison_data, evidence, unsupported
@@ -818,7 +850,7 @@ def _build_contract(profile: CardProfile, deck_context: DeckContext, budget_cap_
         required_theme_obligations=_selected_theme_obligations(profile, deck_context),
         budget_cap_usd=budget_cap_usd,
         commander_color_identity=deck_context.commander_color_identity,
-        exclude_names=set(deck_context.deck_names),
+        exclude_names={name for name in deck_context.deck_names if name != profile.name},
     )
 
 
