@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   acceptAllConsent,
   applyConsentToDocument,
@@ -36,37 +36,31 @@ const CONSENT_OPTIONS: Array<{
   },
 ];
 
-export default function ConsentManager() {
+function consentDraftFromState(value: ConsentState | null): ConsentDraft {
+  return value
+    ? {
+        functional: value.functional,
+        analytics: value.analytics,
+        marketing: value.marketing,
+      }
+    : defaultConsentDraft();
+}
+
+function useConsentPreferencesState() {
   const [ready, setReady] = useState(false);
   const [consent, setConsent] = useState<ConsentState | null>(null);
   const [draft, setDraft] = useState<ConsentDraft>(defaultConsentDraft());
-  const [open, setOpen] = useState(false);
-
-  const hasStoredConsent = useMemo(() => !!consent, [consent]);
 
   function persist(next: ConsentState) {
     setConsent(next);
-    setDraft({
-      functional: next.functional,
-      analytics: next.analytics,
-      marketing: next.marketing,
-    });
+    setDraft(consentDraftFromState(next));
     applyConsentToDocument(next);
-    setOpen(false);
   }
 
   useEffect(() => {
     const stored = readStoredConsent();
     setConsent(stored);
-    setDraft(
-      stored
-        ? {
-            functional: stored.functional,
-            analytics: stored.analytics,
-            marketing: stored.marketing,
-          }
-        : defaultConsentDraft(),
-    );
+    setDraft(consentDraftFromState(stored));
     applyConsentToDocument(stored);
     setReady(true);
   }, []);
@@ -76,21 +70,101 @@ export default function ConsentManager() {
       if (event.key && event.key !== CONSENT_STORAGE_KEY) return;
       const stored = readStoredConsent();
       setConsent(stored);
-      setDraft(
-        stored
-          ? {
-              functional: stored.functional,
-              analytics: stored.analytics,
-              marketing: stored.marketing,
-            }
-          : defaultConsentDraft(),
-      );
+      setDraft(consentDraftFromState(stored));
       applyConsentToDocument(stored);
     }
 
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
+
+  return { ready, consent, draft, setDraft, persist };
+}
+
+export function ConsentPreferencesPanel({
+  onSaved,
+  showIntro = true,
+}: {
+  onSaved?: () => void;
+  showIntro?: boolean;
+}) {
+  const { ready, draft, setDraft, persist } = useConsentPreferencesState();
+
+  function save(next: ConsentState) {
+    persist(next);
+    onSaved?.();
+  }
+
+  if (!ready) {
+    return <p className="control-help">Loading privacy choices…</p>;
+  }
+
+  return (
+    <div className="stack">
+      {showIntro ? (
+        <div className="account-section-intro">
+          <strong>Privacy choices</strong>
+          <span>Strictly necessary storage always stays on. Optional categories only turn on if you enable them here.</span>
+        </div>
+      ) : null}
+
+      <div
+        className="mini-card"
+        data-surface="2"
+        title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
+        aria-label="Strictly necessary. The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
+      >
+        <div className="mini-label-row">
+          <div className="mini-label">Strictly necessary</div>
+          <span className="mini-tooltip-trigger" aria-hidden="true" title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state.">?</span>
+        </div>
+        <div className="mini-value">Always active</div>
+        <p className="control-help">Required for authentication, CSRF protection, security, and core app state.</p>
+      </div>
+
+      {CONSENT_OPTIONS.map((option) => (
+        <label key={option.key} className="consent-option">
+          <div className="consent-option-main">
+            <strong>{option.label}</strong>
+            <span>{option.description}</span>
+          </div>
+          <input
+            type="checkbox"
+            checked={draft[option.key]}
+            onChange={(event) => setDraft((current) => ({ ...current, [option.key]: event.target.checked }))}
+          />
+        </label>
+      ))}
+
+      <p className="control-help">
+        Optional tracking integrations are currently off by default. These controls are already in place so future analytics, ads, or pixels
+        can be gated correctly.
+      </p>
+
+      <div className="account-primary-actions">
+        <button type="button" className="btn" onClick={() => save(rejectOptionalConsent())}>
+          Reject optional
+        </button>
+        <button type="button" className="btn btn-primary" onClick={() => save(buildConsentFromDraft(draft))}>
+          Save choices
+        </button>
+        <button type="button" className="btn" onClick={() => save(acceptAllConsent())}>
+          Accept all
+        </button>
+      </div>
+
+      <div className="legal-actions">
+        <Link href="/privacy">Privacy policy</Link>
+      </div>
+    </div>
+  );
+}
+
+export default function ConsentManager() {
+  const { ready, consent, persist } = useConsentPreferencesState();
+  const [open, setOpen] = useState(false);
+
+  const hasStoredConsent = Boolean(consent);
 
   if (!ready) return null;
 
@@ -120,12 +194,6 @@ export default function ConsentManager() {
         </div>
       ) : null}
 
-      {hasStoredConsent ? (
-        <button type="button" className="consent-manage-trigger" onClick={() => setOpen(true)}>
-          Privacy choices
-        </button>
-      ) : null}
-
       {open ? <button type="button" className="consent-overlay" aria-label="Close privacy choices" onClick={() => setOpen(false)} /> : null}
 
       <aside className={`consent-drawer ${open ? "open" : ""}`} aria-hidden={!open} role="dialog" aria-modal="true" aria-labelledby="consent-drawer-title">
@@ -140,55 +208,8 @@ export default function ConsentManager() {
           </button>
         </div>
 
-        <div className="consent-drawer-body stack">
-          <div
-            className="mini-card"
-            data-surface="2"
-            title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
-            aria-label="Strictly necessary. The cookies and stored settings the site needs to work at all, such as login, security, and core app state."
-          >
-            <div className="mini-label-row">
-              <div className="mini-label">Strictly necessary</div>
-              <span className="mini-tooltip-trigger" aria-hidden="true" title="The cookies and stored settings the site needs to work at all, such as login, security, and core app state.">?</span>
-            </div>
-            <div className="mini-value">Always active</div>
-            <p className="control-help">Required for authentication, CSRF protection, security, and core app state.</p>
-          </div>
-
-          {CONSENT_OPTIONS.map((option) => (
-            <label key={option.key} className="consent-option">
-              <div className="consent-option-main">
-                <strong>{option.label}</strong>
-                <span>{option.description}</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={draft[option.key]}
-                onChange={(event) => setDraft((current) => ({ ...current, [option.key]: event.target.checked }))}
-              />
-            </label>
-          ))}
-
-          <p className="control-help">
-            Optional tracking integrations are currently off by default. These controls are already in place so future analytics, ads, or pixels
-            can be gated correctly.
-          </p>
-
-          <div className="account-primary-actions">
-            <button type="button" className="btn" onClick={() => persist(rejectOptionalConsent())}>
-              Reject optional
-            </button>
-            <button type="button" className="btn btn-primary" onClick={() => persist(buildConsentFromDraft(draft))}>
-              Save choices
-            </button>
-            <button type="button" className="btn" onClick={() => persist(acceptAllConsent())}>
-              Accept all
-            </button>
-          </div>
-
-          <div className="legal-actions">
-            <Link href="/privacy">Privacy policy</Link>
-          </div>
+        <div className="consent-drawer-body">
+          <ConsentPreferencesPanel showIntro={false} onSaved={() => setOpen(false)} />
         </div>
       </aside>
     </>
