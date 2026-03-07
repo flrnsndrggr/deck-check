@@ -2643,13 +2643,18 @@ export default function HomePage() {
   }, []);
 
   const sidebarProgressMeta = analysisProgressMeta.show ? analysisProgressMeta : decklistProgressMeta;
-  const accountInitials = (authUser?.email || "dc")
-    .split("@")[0]
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part: string) => part[0]?.toUpperCase() || "")
-    .join("") || "DC";
+  const accountInitials = (() => {
+    const localPart = String(authUser?.email || "").split("@")[0].trim();
+    if (!localPart) return "DC";
+    const parts = localPart.split(/[\s._-]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return parts
+        .slice(0, 2)
+        .map((part: string) => part[0]?.toUpperCase() || "")
+        .join("");
+    }
+    return localPart.slice(0, 2).toUpperCase() || "DC";
+  })();
   const activeAuthMode = resetToken ? "recover" : authMode;
   const isDecksOverlayOpen = activeOverlay === "decks";
   const isSettingsOverlayOpen = activeOverlay === "settings";
