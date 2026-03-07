@@ -95,3 +95,44 @@ def test_manabase_analysis_handles_colorless_identity(monkeypatch):
     assert rows[0]["land_sources"] >= 2
     curve = out["manabase_analysis"]["curve"]["histogram"]
     assert any(int(x["mana_value"]) == 4 for x in curve)
+
+
+def test_analyze_prefers_card_entry_mana_metadata_for_curve_and_manabase(monkeypatch):
+    monkeypatch.setattr("app.services.analyzer.suggest_adds", lambda *args, **kwargs: [])
+
+    cards = [
+        CardEntry(qty=1, name="Commander", section="commander", tags=["#Engine"], mana_cost="{1}{G}{W}", mana_value=3),
+        CardEntry(qty=1, name="Nature's Lore", section="deck", tags=["#Ramp"], mana_cost="{1}{G}", mana_value=2),
+        CardEntry(qty=1, name="Temple Garden", section="deck", tags=["#Land"], mana_value=0),
+    ]
+    card_map = {
+        "Nature's Lore": {
+            "name": "Nature's Lore",
+            "type_line": "Sorcery",
+            "oracle_text": "Search your library for a Forest card, put that card onto the battlefield, then shuffle.",
+            "produced_mana": [],
+        },
+        "Temple Garden": {
+            "name": "Temple Garden",
+            "type_line": "Land — Forest Plains",
+            "oracle_text": "({T}: Add {G} or {W}.)",
+            "produced_mana": ["G", "W"],
+        },
+    }
+
+    out = az.analyze(
+        cards=cards,
+        sim_summary=_base_sim(),
+        bracket_report={"bracket": 3, "violations": []},
+        template="balanced",
+        commander_ci="GW",
+        combo_intel={"combo_support_score": 0, "matched_variants": [], "near_miss_variants": []},
+        commander="Commander",
+        commander_colors=["G", "W"],
+        card_map=card_map,
+    )
+
+    assert out["role_breakdown"]["curve"][2] == 1
+    curve_cards = out["manabase_analysis"]["curve"]["cards_by_mv"]["2"]
+    assert any(card["card"] == "Nature's Lore" and card["mana_cost"] == "{1}{G}" for card in curve_cards)
+    assert out["manabase_analysis"]["summary"]["average_mana_value_without_lands"] > 0

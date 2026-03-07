@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List
 
 from app.schemas.deck import CardEntry
 from app.services.commander_utils import commander_names_from_cards, normalize_name as normalize_commander_name
+from app.services.mana import resolve_mana_cost, resolve_mana_value
 
 WINCON_ORDER = [
     "Combo",
@@ -193,6 +194,8 @@ def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, A
         text = _text(payload)
         type_line = str(payload.get("type_line") or "").lower()
         keywords = _keywords(payload)
+        mana_cost = resolve_mana_cost(entry, payload)
+        mana_value = resolve_mana_value(entry, payload)
         token_power, token_bodies = _token_stats(text)
         burn_value, repeatable_burn = _damage_stats(text)
         mill_value, repeatable_mill = _mill_stats(text)
@@ -229,6 +232,8 @@ def enrich_sim_cards(cards: Iterable[CardEntry], card_map: Dict[str, Dict[str, A
         out.append(
             {
                 **entry.model_dump(),
+                "mana_cost": mana_cost,
+                "mana_value": mana_value,
                 "type_line": payload.get("type_line"),
                 "oracle_text": payload.get("oracle_text"),
                 "keywords": sorted(keywords),

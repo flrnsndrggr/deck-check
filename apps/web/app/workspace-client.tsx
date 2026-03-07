@@ -3211,7 +3211,7 @@ export default function HomePage() {
                 <div className="card-preview-scroll">
                   <table className="table card-preview-table" style={{ marginTop: 6 }}>
                     <thead>
-                      <tr><th>Card</th><th>Role hint</th></tr>
+                      <tr><th>Card</th><th>Mana cost</th><th>Role hint</th></tr>
                     </thead>
                     <tbody>
                       {(tagRes?.cards || []).map((c: any, i: number) => {
@@ -3233,6 +3233,7 @@ export default function HomePage() {
                               {isCommanderCard ? <span className="card-preview-badge">Commander</span> : null}
                             </span>
                           </td>
+                          <td>{c?.mana_cost ? <ManaText text={String(c.mana_cost)} /> : "n/a"}</td>
                           <td>{(c.tags || []).slice(0, 2).join(", ") || "n/a"}</td>
                         </tr>
                         );
