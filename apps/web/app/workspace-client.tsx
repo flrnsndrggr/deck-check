@@ -731,7 +731,7 @@ export default function HomePage() {
   const commanderBannerArt = useMemo<BannerArt>(() => {
     const crops = commanderNames
       .map((name: string) => cardArtCrop(name))
-      .filter((src): src is string => Boolean(src))
+      .filter((src: string): src is string => Boolean(src))
       .slice(0, 2);
     if (crops.length >= 2) {
       return { mode: "split", left: crops[0], right: crops[1], names: commanderNames.slice(0, 2) };
