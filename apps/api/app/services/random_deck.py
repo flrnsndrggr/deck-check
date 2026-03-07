@@ -1909,6 +1909,12 @@ class RandomDeckService:
             int(PACKAGE_LIBRARY.get(context.plan.primary_package, {}).get("core_target", 12) * 0.55),
         )
         if context.plan.primary_package in current.packages:
+            current_completion, _current_weakest_axis, current_axes = self._package_completion_state(
+                selected,
+                context.plan.primary_package,
+                secondary=False,
+                context=context,
+            )
             completion, _weakest_axis, _axis_state = self._package_completion_state(
                 remaining,
                 context.plan.primary_package,
@@ -1916,11 +1922,24 @@ class RandomDeckService:
                 context=context,
             )
             primary_count = sum(1 for row in remaining if context.plan.primary_package in row.packages)
-            if completion < 0.95 or primary_count < primary_core_floor:
+            if primary_count < primary_core_floor:
                 return False
+            if completion + 0.01 < current_completion:
+                return False
+            for axis, current_state in current_axes.items():
+                current_ratio = float(current_state.get("ratio", 0.0))
+                remaining_ratio = float(_axis_state.get(axis, {}).get("ratio", 0.0))
+                if remaining_ratio + 0.01 < current_ratio:
+                    return False
         for package in context.plan.secondary_packages:
             if package not in current.packages:
                 continue
+            current_completion, _current_weakest_axis, current_axes = self._package_completion_state(
+                selected,
+                package,
+                secondary=True,
+                context=context,
+            )
             completion, _weakest_axis, _axis_state = self._package_completion_state(
                 remaining,
                 package,
@@ -1932,8 +1951,15 @@ class RandomDeckService:
                 int(round(PACKAGE_LIBRARY.get(package, {}).get("secondary_target", 6) * 0.65)),
             )
             package_count = sum(1 for row in remaining if package in row.packages)
-            if completion < 0.85 or package_count < secondary_floor:
+            if package_count < secondary_floor:
                 return False
+            if completion + 0.01 < current_completion:
+                return False
+            for axis, current_state in current_axes.items():
+                current_ratio = float(current_state.get("ratio", 0.0))
+                remaining_ratio = float(_axis_state.get(axis, {}).get("ratio", 0.0))
+                if remaining_ratio + 0.01 < current_ratio:
+                    return False
         return True
 
     def _force_coverage_floor(

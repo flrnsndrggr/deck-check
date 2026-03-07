@@ -570,7 +570,8 @@ def _evaluate_outcome(
         if combo_wincon:
             return OutcomeResult(OutcomeTier.HARD_WIN, wincon=combo_wincon, reason=combo_reason, lock_established=lock_established, lock_plus_clock=lock_plus_clock)
 
-    all_dead_by_burn = all(life <= 0 for life in state.opp_life)
+    all_dead_by_life = all(life <= 0 for life in state.opp_life)
+    all_dead_by_burn = all_dead_by_life
     all_dead_by_poison = all(poison >= 10 for poison in state.opp_poison)
     all_dead_by_mill = all(size <= 0 for size in state.opp_library)
     all_dead_by_commander = all(any(state.opp_cmdr_dmg[slot][opp_idx] >= 21 for slot in range(MAX_COMMANDERS)) for opp_idx in range(3))
@@ -582,6 +583,9 @@ def _evaluate_outcome(
         return OutcomeResult(OutcomeTier.HARD_WIN, wincon="Mill", reason="All opponent libraries were emptied.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
     if "Commander Damage" in selected_wincons and all_dead_by_commander:
         return OutcomeResult(OutcomeTier.HARD_WIN, wincon="Commander Damage", reason="Each opponent took lethal commander damage from a specific commander.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
+
+    if "Combat" in selected_wincons and current_window == "combat_damage" and all_dead_by_life:
+        return OutcomeResult(OutcomeTier.HARD_WIN, wincon="Combat", reason="Accumulated combat pressure eliminated the full table.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
 
     if "Combat" in selected_wincons and combat_snapshot and bool(combat_snapshot.get("hard_win")):
         return OutcomeResult(OutcomeTier.HARD_WIN, wincon="Combat", reason="Combat allocation kills the full table under the current blocker/removal model.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
