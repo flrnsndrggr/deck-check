@@ -72,14 +72,22 @@ def compile_deck_fingerprint(cards: Sequence[Any], commander_cards: Sequence[Any
     ]
     support_scores = [float(getattr(summary, "support_score", 0.0)) for summary in exec_summaries if summary is not None]
 
+    combo_piece_count = tag_counts.get("#Combo", 0)
+    alt_win_sources = sum(1 for card in cards if getattr(card, "alt_win_kind", None))
+    alt_win_exec_count = sum(1 for card_exec in exec_lookup.values() if getattr(card_exec, "alt_win_rules", ()))
+    effective_alt_win_count = max(alt_win_sources, alt_win_exec_count)
+
+    combo_tutor_support = min(tag_counts.get("#Tutor", 0), max(0, combo_piece_count) + 1)
+    combo_engine_support = min(tag_counts.get("#Engine", 0), max(0, combo_piece_count) + 1)
+
     plan_scores = {
-        "combo": tag_counts.get("#Combo", 0) * 1.9 + tag_counts.get("#Tutor", 0) * 0.9 + tag_counts.get("#Engine", 0) * 0.5,
+        "combo": combo_piece_count * 2.2 + combo_tutor_support * 0.6 + combo_engine_support * 0.35,
         "combat": creature_count * 0.18 + tag_counts.get("#Payoff", 0) * 0.35 + sum(float(getattr(card, "combat_buff", 0.0) or 0.0) for card in cards),
         "poison": sum(1 for card in cards if bool(getattr(card, "infect", False)) or float(getattr(card, "toxic", 0.0) or 0.0) > 0) * 2.2
         + sum(1 for card in cards if bool(getattr(card, "proliferate", False))) * 0.8,
         "drain": sum(1 for summary in exec_summaries if summary and any(op in summary.executable for op in ("drain_all_opponents", "burn_all_opponents", "burn_single_target"))) * 1.3,
         "mill": sum(1 for summary in exec_summaries if summary and any(op in summary.executable for op in ("mill_all_opponents", "mill_single_target"))) * 1.5,
-        "alt-win": sum(1 for card_exec in exec_lookup.values() if getattr(card_exec, "alt_win_rules", ())) * 2.0,
+        "alt-win": effective_alt_win_count * 4.0 + tag_counts.get("#Protection", 0) * 0.2 + tag_counts.get("#Draw", 0) * 0.1,
     }
     primary_plan = max(plan_scores.items(), key=lambda kv: (kv[1], kv[0]))[0]
     secondary_plan = None

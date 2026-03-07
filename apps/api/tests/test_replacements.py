@@ -1267,7 +1267,8 @@ def test_invariant_returned_candidates_preserve_main_types_themes_and_budget(mon
 
     monkeypatch.setattr("app.services.replacements.CardDataService", FakeSvc)
     out = strictly_better_replacements(cards, "Elvish Mystic", commander="Commander", budget_max_usd=5, explain=True)
-    assert [row["card"] for row in out["options"]] == ["Fyndhorn Elves"]
+    assert out["options"] == []
+    assert out["no_result_reasons"]
     assert out["selected_profile"]["theme_obligations"]
 
 

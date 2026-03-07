@@ -12,7 +12,7 @@ from sim.config import (
     coerce_resolved_sim_config,
     normalize_selected_wincons,
 )
-from sim.ir import OutcomeResult, OutcomeTier, compile_card_execs, summarize_compiled_execs
+from sim.ir import DeckFingerprint, OutcomeResult, OutcomeTier, Winline, compile_card_execs, summarize_compiled_execs
 from sim.opponents import (
     VirtualTable,
     blocker_budget_vector,
@@ -297,7 +297,11 @@ def _combo_hard_win(state: GameState, combo_variant: Dict[str, Any] | None) -> t
         if combo_variant.get("keys") or combo_variant.get("cards"):
             return "Combo", generic_reason
         return None, None
-    if result_class in {"near_infinite", "engine_loop"}:
+    if result_class == "near_infinite":
+        return None, None
+    if result_class == "engine_loop":
+        if not recipe and (combo_variant.get("keys") or combo_variant.get("cards")):
+            return "Combo", generic_reason
         return None, None
     if result_class == "infinite_mana" and not _has_combo_sink(state):
         return None, None
@@ -419,6 +423,20 @@ def london_mulligan(
     capture_log: bool = False,
     rng_manager: RNGManager | None = None,
 ) -> tuple[list[Card], int] | tuple[list[Card], int, List[Dict]]:
+    fallback_fingerprint = fingerprint
+    fallback_winlines = tuple(winlines or ())
+    if fallback_fingerprint is None:
+        resolved_policy = _policy_alias(policy, 3)
+        fallback_fingerprint = DeckFingerprint(
+            primary_plan="combat",
+            commander_role="value",
+            speed_tier="cedh" if resolved_policy == "optimized" and colors_required <= 2 else "optimized",
+            prefers_focus_fire=False,
+            resource_profile=("curve",),
+            conversion_profile=("combat",),
+        )
+        fallback_winlines = (Winline(kind=fallback_fingerprint.primary_plan),)
+
     def finalize_hand(hand7: List[Card], bottoms: int, bottomed_indices: Tuple[int, ...], plan_bottomed: Tuple[str, ...]) -> tuple[List[Card], List[Card]]:
         keep_count = max(0, len(hand7) - bottoms)
         effective_indices = bottomed_indices[:bottoms] if bottomed_indices else _fallback_bottom_indices(hand7, bottoms)
@@ -444,29 +462,23 @@ def london_mulligan(
         else:
             rng.shuffle(deck)
         hand7 = deck[:7]
+        plan = hand_plan(
+            hand7,
+            fingerprint=fallback_fingerprint,
+            winlines=fallback_winlines,
+            colors_required=colors_required,
+            commander_cards=commander_cards or [],
+            mulligans_taken=mulligans,
+            multiplayer=multiplayer,
+        )
+        keep = plan.keep if fingerprint is not None else (plan.keep and _keep_hand(hand7, policy, colors_required))
+        bottomed_indices = plan.bottomed_indices or _fallback_bottom_indices(hand7, mulligans)
+        plan_bottomed = plan.bottomed or tuple(hand7[idx].name for idx in bottomed_indices)
+        plan_score = plan.score
+        plan_name = plan.plan if fingerprint is not None else "fallback_keep"
+        plan_reasons = list(plan.reasons)
         if fingerprint is None:
-            keep = _keep_hand(hand7, policy, colors_required)
-            bottomed_indices = _fallback_bottom_indices(hand7, mulligans)
-            plan_bottomed = tuple(hand7[idx].name for idx in bottomed_indices)
-            plan_score = 0.0
-            plan_name = "fallback_keep"
-            plan_reasons = ["Fallback mulligan heuristic used because no deck fingerprint is available."]
-        else:
-            plan = hand_plan(
-                hand7,
-                fingerprint=fingerprint,
-                winlines=winlines or (),
-                colors_required=colors_required,
-                commander_cards=commander_cards or [],
-                mulligans_taken=mulligans,
-                multiplayer=multiplayer,
-            )
-            keep = plan.keep
-            bottomed_indices = plan.bottomed_indices
-            plan_bottomed = plan.bottomed
-            plan_score = plan.score
-            plan_name = plan.plan
-            plan_reasons = list(plan.reasons)
+            plan_reasons.append("Fallback mulligan fingerprint used because no deck fingerprint was provided.")
         if capture_log:
             steps.append(
                 {
@@ -587,7 +599,7 @@ def _evaluate_outcome(
         if sum(1 for idx in range(3) if projected_life[idx] <= 0 or projected_poison[idx] >= 10) >= 2:
             return OutcomeResult(OutcomeTier.MODEL_WIN, wincon="Combat", reason="Combat pressure likely eliminates most of the table on the next cycle.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
         if combat_snapshot.get("combat_damage", 0.0) >= 18.0 or sum(projected_poison) >= 10.0:
-            return OutcomeResult(OutcomeTier.DOMINANT, wincon="Combat", reason="Board pressure is strong, but not a deterministic table kill.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
+            return OutcomeResult(OutcomeTier.DOMINANT, wincon="Combat", reason="Combat pressure is strong, but not a deterministic table kill.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)
 
     if state.burn_total >= 18.0 or state.mill_total >= 40.0 or len(state.active_engines) >= 2:
         return OutcomeResult(OutcomeTier.DOMINANT, wincon=fingerprint.primary_plan.title(), reason="The deck is materially ahead, but the line is not deterministic yet.", lock_established=lock_established, lock_plus_clock=lock_plus_clock)

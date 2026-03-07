@@ -2079,7 +2079,7 @@ class RandomDeckService:
 
         selected = self._repair_deck(context, candidates, selected, spell_target)
         score, metrics = self._score_generated_deck(context, selected)
-        interaction_count = sum(1 for row in selected if "interaction" in row.roles)
+        interaction_count = int(round(self._coverage_counts(selected).get("role:interaction", 0.0)))
         commander_entries = [CardEntry(qty=1, name=name, section="commander") for name in context.commander_names]
         land_entries = self._build_mana_base(context, [row.card for row in selected])
         cards = [*commander_entries, *land_entries, *[row.entry for row in selected[:spell_target]]]
