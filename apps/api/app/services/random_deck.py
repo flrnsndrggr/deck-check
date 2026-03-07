@@ -1971,6 +1971,32 @@ class RandomDeckService:
         coverage_key: str,
         floor: float,
     ) -> List[TaggedCandidate]:
+        def can_trade_for_floor(current: TaggedCandidate) -> bool:
+            remaining = [row for row in selected if row is not current]
+            remaining_coverage = self._coverage_counts(remaining)
+            remaining_support = self._support_counts(remaining, context=context)
+
+            for key, (role_floor, _role_ceiling) in context.plan.coverage_targets.items():
+                if key == coverage_key or current.coverage.get(key, 0.0) <= 0:
+                    continue
+                if remaining_coverage.get(key, 0.0) + 0.01 < role_floor * 0.9:
+                    return False
+
+            for axis, target in context.plan.support_targets.items():
+                if axis not in current.provides:
+                    continue
+                if remaining_support.get(axis, 0) < max(0, int(target) - 1):
+                    return False
+
+            if context.plan.primary_package in current.packages:
+                primary_floor = max(
+                    4,
+                    int(PACKAGE_LIBRARY.get(context.plan.primary_package, {}).get("core_target", 12) * 0.55),
+                )
+                if sum(1 for row in remaining if context.plan.primary_package in row.packages) < primary_floor:
+                    return False
+            return True
+
         selected_names = {row.entry.name for row in selected}
         while self._coverage_counts(selected).get(coverage_key, 0.0) < floor * 0.95:
             replacement = self._pick_candidate(
@@ -1999,6 +2025,18 @@ class RandomDeckService:
                 selected_names.add(replacement.entry.name)
                 removed = True
                 break
+            if not removed:
+                for current in removable:
+                    if current.coverage.get(coverage_key, 0.0) > 0:
+                        continue
+                    if not can_trade_for_floor(current):
+                        continue
+                    selected.remove(current)
+                    selected.append(replacement)
+                    selected_names.remove(current.entry.name)
+                    selected_names.add(replacement.entry.name)
+                    removed = True
+                    break
             if not removed:
                 break
         return selected[:spell_target]
