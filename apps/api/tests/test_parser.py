@@ -31,3 +31,32 @@ Deck
     assert parsed.commander == "Tymna the Weaver"
     assert parsed.commanders == ["Tymna the Weaver", "Kraum, Ludevic's Opus"]
     assert not parsed.errors
+
+
+def test_parse_strips_trailing_moxfield_tags():
+    raw = """Commander
+1 Atraxa, Praetors' Voice #CommanderSynergy
+Deck
+1 Sol Ring #!Ramp #!Rock
+98 Island
+"""
+    parsed = parse_decklist(raw)
+    assert parsed.commander == "Atraxa, Praetors' Voice"
+    names = [c.name for c in parsed.cards]
+    assert "Sol Ring" in names
+    assert "Sol Ring #!Ramp #!Rock" not in names
+    assert not parsed.errors
+
+
+def test_parse_strips_tags_from_split_cards():
+    raw = """Commander
+1 Narset, Enlightened Exile
+Deck
+1 Dusk // Dawn #Setup #Spellslinger
+98 Island
+"""
+    parsed = parse_decklist(raw)
+    names = [c.name for c in parsed.cards]
+    assert "Dusk // Dawn" in names
+    assert "Dusk // Dawn #Setup #Spellslinger" not in names
+    assert not parsed.errors

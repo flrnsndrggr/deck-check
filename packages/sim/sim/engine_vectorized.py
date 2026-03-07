@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from statistics import median
 from typing import Dict, List
 
 import numpy as np
+
+from sim.config import (
+    MAX_COMMANDERS,
+    ResolvedSimConfig,
+    coerce_resolved_sim_config,
+    normalize_selected_wincons,
+)
+from sim.ir import compile_card_execs, summarize_compiled_execs
+from sim.rng import RNGManager
+from sim.tiebreak import stable_sorted
 
 
 @dataclass
@@ -55,7 +65,7 @@ def _normalize_name(name: str | None) -> str:
 _ALT_WIN_CODE = {
     None: 0,
     "": 0,
-    "generic": 1,
+    "generic": 0,
     "life40": 2,
     "artifacts20": 3,
     "creatures20": 4,
@@ -68,19 +78,22 @@ _ALT_WIN_CODE = {
 
 
 def _policy_alias(policy: str, bracket: int) -> str:
-    if policy == "auto":
-        if bracket >= 5:
-            return "cedh"
-        if bracket <= 2:
-            return "casual"
-        return "optimized"
-    return policy
+    return coerce_resolved_sim_config(
+        None,
+        commander=None,
+        requested_policy=policy,
+        bracket=bracket,
+        turn_limit=8,
+        multiplayer=True,
+        threat_model=False,
+        primary_wincons=None,
+        color_identity_size=0,
+        seed=42,
+    ).policy.resolved_policy
 
 
 def _normalize_wincons(primary_wincons: List[str] | None) -> List[str]:
-    if not primary_wincons:
-        return ["Combo", "Alt Win", "Poison", "Commander Damage", "Drain/Burn", "Mill", "Control Lock", "Combat"]
-    return primary_wincons
+    return list(normalize_selected_wincons(primary_wincons))
 
 
 def _percentile(xs: np.ndarray, p: float) -> float:
@@ -107,18 +120,22 @@ def _turn_sort_key(v: str):
         return (0, 0)
 
 
-def _separate_sim_cards(cards: List[dict], commander: str | None) -> tuple[List[dict], dict | None]:
-    commander_key = _normalize_name(commander)
+def _separate_sim_cards(cards: List[dict], commander: str | List[str] | None) -> tuple[List[dict], List[dict]]:
+    commander_keys = {
+        _normalize_name(name)
+        for name in ([commander] if isinstance(commander, str) else list(commander or []))
+        if _normalize_name(str(name))
+    }
     main_cards: List[dict] = []
-    commander_card: dict | None = None
+    commander_cards: List[dict] = []
 
     for card in cards:
         name = str(card.get("name", "")).strip()
         section = str(card.get("section", "deck") or "deck").strip().lower()
-        is_commander = commander_key and _normalize_name(name) == commander_key
+        is_commander = _normalize_name(name) in commander_keys
 
-        if is_commander and (section == "commander" or commander_card is None):
-            commander_card = card
+        if is_commander and (section == "commander" or not any(_normalize_name(existing.get("name")) == _normalize_name(name) for existing in commander_cards)):
+            commander_cards.append(card)
             if section != "deck":
                 continue
         if section != "deck":
@@ -127,7 +144,7 @@ def _separate_sim_cards(cards: List[dict], commander: str | None) -> tuple[List[
             continue
         main_cards.append(card)
 
-    return main_cards, commander_card
+    return main_cards, commander_cards
 
 
 def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
@@ -154,10 +171,14 @@ def _normalize_combo_variants(combo_variants: List[Dict] | None) -> List[Dict]:
     return normalized
 
 
-def _prepare_combo_requirements(deck_names: List[str], combo_variants: List[Dict], commander: str | None) -> List[Dict]:
+def _prepare_combo_requirements(deck_names: List[str], combo_variants: List[Dict], commander: str | List[str] | None) -> List[Dict]:
     if not combo_variants:
         return []
-    commander_key = _normalize_name(commander)
+    commander_keys = {
+        _normalize_name(name)
+        for name in ([commander] if isinstance(commander, str) else list(commander or []))
+        if _normalize_name(str(name))
+    }
     name_to_indices: Dict[str, List[int]] = defaultdict(list)
     for idx, name in enumerate(deck_names):
         name_to_indices[_normalize_name(name)].append(idx)
@@ -165,11 +186,11 @@ def _prepare_combo_requirements(deck_names: List[str], combo_variants: List[Dict
     requirements: List[Dict] = []
     for variant in combo_variants:
         groups = []
-        requires_commander = False
+        required_commanders: set[str] = set()
         valid = True
         for key in variant["keys"]:
-            if commander_key and key == commander_key:
-                requires_commander = True
+            if key in commander_keys:
+                required_commanders.add(key)
                 continue
             idxs = name_to_indices.get(key, [])
             if not idxs:
@@ -181,7 +202,7 @@ def _prepare_combo_requirements(deck_names: List[str], combo_variants: List[Dict
                 {
                     "cards": variant["cards"],
                     "groups": groups,
-                    "requires_commander": requires_commander,
+                    "required_commanders": required_commanders,
                 }
             )
     return requirements
@@ -191,6 +212,7 @@ def _detect_live_combo_hits(
     on_battlefield: np.ndarray,
     commander_cast_turn: np.ndarray,
     combo_requirements: List[Dict],
+    commander_names: List[str | None],
 ) -> tuple[np.ndarray, np.ndarray]:
     batch_n = on_battlefield.shape[0]
     hit_mask = np.zeros(batch_n, dtype=bool)
@@ -202,8 +224,14 @@ def _detect_live_combo_hits(
         requirement_hit = np.ones(batch_n, dtype=bool)
         for idxs in requirement["groups"]:
             requirement_hit &= on_battlefield[:, idxs].any(axis=1)
-        if requirement["requires_commander"]:
-            requirement_hit &= commander_cast_turn > 0
+        required_commanders = requirement.get("required_commanders") or set()
+        if required_commanders:
+            for commander_name in required_commanders:
+                slot = next((idx for idx, name in enumerate(commander_names) if _normalize_name(name) == commander_name), None)
+                if slot is None:
+                    requirement_hit &= False
+                    continue
+                requirement_hit &= commander_cast_turn[:, slot] > 0
         new_hit = requirement_hit & ~hit_mask
         if new_hit.any():
             hit_mask[new_hit] = True
@@ -380,7 +408,7 @@ def _evaluate_keep(hand_idx: np.ndarray, deck: _DeckArrays, policy: str, colors_
 
 
 def _roll_openers(
-    rng: np.random.Generator,
+    run_seeds: np.ndarray,
     deck: _DeckArrays,
     batch_n: int,
     policy: str,
@@ -396,7 +424,9 @@ def _roll_openers(
     unresolved = np.arange(batch_n, dtype=np.int32)
     attempt = 0
     while unresolved.size > 0:
-        cand_orders = np.argsort(rng.random((unresolved.size, deck_size)), axis=1).astype(np.int16)
+        cand_orders = np.empty((unresolved.size, deck_size), dtype=np.int16)
+        for local_idx, global_idx in enumerate(unresolved.tolist()):
+            cand_orders[local_idx] = RNGManager(int(run_seeds[global_idx])).permutation("mulligan", deck_size, attempt)
         keeps = _evaluate_keep(cand_orders[:, :7], deck, policy, colors_required)
         for local_idx, global_idx in enumerate(unresolved.tolist()):
             mulligan_logs[global_idx].append(
@@ -477,7 +507,7 @@ def _cast_stage(
 
 def run_simulation_batch_vectorized(
     cards: List[dict],
-    commander: str | None,
+    commander: str | List[str] | None,
     runs: int,
     turn_limit: int,
     policy: str,
@@ -490,32 +520,74 @@ def run_simulation_batch_vectorized(
     combo_variants: List[Dict] | None = None,
     combo_source_live: bool = False,
     batch_size: int = 512,
+    resolved_config: ResolvedSimConfig | Dict | None = None,
 ) -> Dict:
+    if runs <= 128 or commander not in (None, [], "") or combo_variants or combo_source_live or threat_model:
+        from sim.engine import run_simulation_batch as run_simulation_batch_python
+
+        return run_simulation_batch_python(
+            cards=cards,
+            commander=commander,
+            runs=runs,
+            turn_limit=turn_limit,
+            policy=policy,
+            multiplayer=multiplayer,
+            threat_model=threat_model,
+            seed=seed,
+            bracket=bracket,
+            primary_wincons=primary_wincons,
+            color_identity_size=color_identity_size,
+            combo_variants=combo_variants,
+            combo_source_live=combo_source_live,
+            resolved_config=resolved_config,
+        )
+
+    resolved = coerce_resolved_sim_config(
+        resolved_config,
+        commander=commander,
+        requested_policy=policy,
+        bracket=bracket,
+        turn_limit=turn_limit,
+        multiplayer=multiplayer,
+        threat_model=threat_model,
+        primary_wincons=primary_wincons,
+        color_identity_size=color_identity_size,
+        seed=seed,
+    )
     if runs <= 0:
         return {"summary": {"runs": 0}}
 
-    policy = _policy_alias(policy, bracket)
-    selected_wincons = _normalize_wincons(primary_wincons)
-    colors_req = max(0, int(color_identity_size))
+    policy = resolved.policy.resolved_policy
+    selected_wincons = list(resolved.selected_wincons)
+    colors_req = resolved.color_identity_size
 
-    main_cards, commander_card = _separate_sim_cards(cards, commander)
+    commander_names = [name for name in resolved.commander_slots if name]
+    main_cards, commander_cards = _separate_sim_cards(cards, commander_names)
     deck = _expand_deck(main_cards)
+    compiled_exec = compile_card_execs(cards)
     deck_size = deck.mana_value.size
     if deck_size == 0:
         return {"summary": {"runs": runs, "seed": seed, "policy": policy, "turn_limit": turn_limit}}
 
-    rng = np.random.default_rng(int(seed))
-    cmd_mana_value = None
-    cmd_power = 0.0
-    cmd_has_haste = False
-    cmd_evasion = 0.0
-    if commander_card is not None:
-        cmd_mana_value = int(commander_card.get("mana_value", 0) or 0)
-        cmd_power = float(commander_card.get("power") or 0.0)
-        cmd_has_haste = bool(commander_card.get("has_haste", False))
-        cmd_evasion = float(commander_card.get("evasion_score") or 0.0)
+    run_seed_manager = RNGManager(resolved.seed)
+    cmd_names: List[str | None] = list(resolved.commander_slots)
+    cmd_mana_values = np.full(MAX_COMMANDERS, -1, dtype=np.int16)
+    cmd_powers = np.zeros(MAX_COMMANDERS, dtype=np.float32)
+    cmd_has_haste = np.zeros(MAX_COMMANDERS, dtype=bool)
+    cmd_evasion = np.zeros(MAX_COMMANDERS, dtype=np.float32)
+    commander_cards_by_name = {_normalize_name(str(card.get("name"))): card for card in commander_cards}
+    for slot, commander_name in enumerate(cmd_names[:MAX_COMMANDERS]):
+        if not commander_name:
+            continue
+        commander_card = commander_cards_by_name.get(_normalize_name(commander_name))
+        if commander_card is None:
+            continue
+        cmd_mana_values[slot] = int(commander_card.get("mana_value", 0) or 0)
+        cmd_powers[slot] = float(commander_card.get("power") or 0.0)
+        cmd_has_haste[slot] = bool(commander_card.get("has_haste", False))
+        cmd_evasion[slot] = float(commander_card.get("evasion_score") or 0.0)
     normalized_combo_variants = _normalize_combo_variants(combo_variants)
-    combo_requirements = _prepare_combo_requirements(deck.names, normalized_combo_variants, commander)
+    combo_requirements = _prepare_combo_requirements(deck.names, normalized_combo_variants, commander_names)
 
     all_mana = []
     all_lands = []
@@ -548,7 +620,11 @@ def run_simulation_batch_vectorized(
 
     while run_offset < runs:
         batch_n = min(batch_size, runs - run_offset)
-        orders, hand_sizes, mulligans, mulligan_logs = _roll_openers(rng, deck, batch_n, policy, multiplayer, colors_req)
+        run_seed_slice = np.array(
+            [run_seed_manager.seed("run", run_offset + idx) for idx in range(batch_n)],
+            dtype=np.int64,
+        )
+        orders, hand_sizes, mulligans, mulligan_logs = _roll_openers(run_seed_slice, deck, batch_n, policy, multiplayer, colors_req)
         positions = np.empty_like(orders)
         positions[np.arange(batch_n)[:, np.newaxis], orders] = np.arange(deck_size, dtype=np.int16)
 
@@ -568,7 +644,9 @@ def run_simulation_batch_vectorized(
         land_idx = np.full((batch_n, turn_limit), -1, dtype=np.int16)
         cast_by_turn = np.zeros((batch_n, turn_limit, deck_size), dtype=bool)
 
-        commander_cast_turn = np.zeros(batch_n, dtype=np.int16)
+        commander_cast_turn = np.zeros((batch_n, MAX_COMMANDERS), dtype=np.int16)
+        commander_tax = np.zeros((batch_n, MAX_COMMANDERS), dtype=np.int16)
+        commander_casts = np.zeros((batch_n, MAX_COMMANDERS), dtype=np.int16)
         draw_engine_turn = np.zeros(batch_n, dtype=np.int16)
         ramp_online_turn = np.zeros(batch_n, dtype=np.int16)
         win_turn = np.zeros(batch_n, dtype=np.int16)
@@ -576,7 +654,7 @@ def run_simulation_batch_vectorized(
         achieved_reason = np.array([""] * batch_n, dtype=object)
         graveyard_count = np.zeros(batch_n, dtype=np.int16)
         combat_damage_total = np.zeros(batch_n, dtype=np.float32)
-        commander_damage_total = np.zeros(batch_n, dtype=np.float32)
+        commander_damage_total = np.zeros((batch_n, MAX_COMMANDERS, 3), dtype=np.float32)
         poison_total = np.zeros(batch_n, dtype=np.float32)
         burn_total = np.zeros(batch_n, dtype=np.float32)
         mill_total = np.zeros(batch_n, dtype=np.float32)
@@ -670,16 +748,25 @@ def run_simulation_batch_vectorized(
             draw_engine_turn[new_draw] = turn
 
             # 4) commander cast stage
-            if commander and cmd_mana_value is not None:
-                should_cast = ((policy in {"commander-centric", "optimized", "casual"}) and turn >= 3) or (
-                    policy == "hold commander" and turn >= 5
+            should_cast = ((policy in {"commander-centric", "optimized", "casual"}) and turn >= 3) or (
+                policy == "hold commander" and turn >= 5
+            )
+            if should_cast:
+                commander_order = stable_sorted(
+                    [
+                        (slot, cmd_names[slot], int(cmd_mana_values[slot]))
+                        for slot in range(MAX_COMMANDERS)
+                        if cmd_names[slot] and cmd_mana_values[slot] >= 0
+                    ],
+                    key=lambda item: (item[2], str(item[1])),
                 )
-                if should_cast:
-                    cmd_cost = int(cmd_mana_value)
-                    can_cmd = (commander_cast_turn == 0) & (available_mana >= cmd_cost)
+                for slot, _name, mana_value in commander_order:
+                    cmd_cost = int(mana_value) + commander_tax[:, slot]
+                    can_cmd = (commander_cast_turn[:, slot] == 0) & (available_mana >= cmd_cost)
                     if can_cmd.any():
-                        available_mana[can_cmd] -= cmd_cost
-                        commander_cast_turn[can_cmd] = turn
+                        available_mana[can_cmd] -= cmd_cost[can_cmd]
+                        commander_cast_turn[can_cmd, slot] = turn
+                        commander_casts[can_cmd, slot] += 1
 
             # 5/6) plan pieces
             plan_role = deck.is_payoff | deck.is_engine | deck.is_setup | deck.is_tutor | deck.is_wincon | deck.is_combo
@@ -771,12 +858,21 @@ def run_simulation_batch_vectorized(
             )
             evasion_factor = np.minimum(1.0, 0.55 + avg_evasion)
             combat_damage_turn = (base_attack_power + token_power_total + combat_buff_total * attack_body_count) * extra_combat * evasion_factor
-            commander_can_attack = (commander_cast_turn > 0) & ((commander_cast_turn < turn) | ((commander_cast_turn == turn) & cmd_has_haste))
-            commander_damage_turn = np.where(
-                commander_can_attack,
-                np.maximum(0.0, cmd_power + commander_buff_total + combat_buff_total) * extra_combat * min(1.0, 0.55 + cmd_evasion),
-                0.0,
-            )
+            commander_damage_turn = np.zeros((batch_n, MAX_COMMANDERS), dtype=np.float32)
+            for slot in range(MAX_COMMANDERS):
+                if not cmd_names[slot] or cmd_mana_values[slot] < 0:
+                    continue
+                commander_can_attack = (commander_cast_turn[:, slot] > 0) & (
+                    (commander_cast_turn[:, slot] < turn)
+                    | ((commander_cast_turn[:, slot] == turn) & cmd_has_haste[slot])
+                )
+                commander_damage_turn[:, slot] = np.where(
+                    commander_can_attack,
+                    np.maximum(0.0, cmd_powers[slot] + commander_buff_total + combat_buff_total)
+                    * extra_combat
+                    * min(1.0, 0.55 + float(cmd_evasion[slot])),
+                    0.0,
+                )
             poison_turn = (
                 ((attackers & deck.infect[np.newaxis, :]) * deck.power[np.newaxis, :]).sum(axis=1)
                 + ((attackers * deck.toxic[np.newaxis, :]).sum(axis=1))
@@ -790,13 +886,13 @@ def run_simulation_batch_vectorized(
                 (current_turn_cast * deck.mill_value[np.newaxis, :]).sum(axis=1)
                 + ((on_battlefield & ~current_turn_cast) * deck.repeatable_mill[np.newaxis, :]).sum(axis=1)
             )
-            progress = mana_total * 0.5 + draw_count * 0.8 + engine_count * 1.0 + np.where(commander_cast_turn > 0, 1.2, 0.0)
+            progress = mana_total * 0.5 + draw_count * 0.8 + engine_count * 1.0 + np.where(commander_cast_turn.any(axis=1), 1.2, 0.0)
             progress += np.minimum(6.0, combat_damage_turn / 10.0)
-            progress += np.minimum(5.0, commander_damage_turn / 6.0)
+            progress += np.minimum(5.0, commander_damage_turn.sum(axis=1) / 6.0)
             progress += np.minimum(4.0, burn_total / 10.0)
             plan_progress[:, t] = progress
             combat_damage_total += combat_damage_turn.astype(np.float32)
-            commander_damage_total += commander_damage_turn.astype(np.float32)
+            commander_damage_total[:, :, 0] += commander_damage_turn.astype(np.float32)
             poison_total += poison_turn.astype(np.float32)
             burn_total += burn_turn.astype(np.float32)
             mill_total += mill_turn.astype(np.float32)
@@ -822,7 +918,7 @@ def run_simulation_batch_vectorized(
                     break
                 if w == "Combo":
                     if combo_source_live:
-                        cond, reasons = _detect_live_combo_hits(on_battlefield, commander_cast_turn, combo_requirements)
+                        cond, reasons = _detect_live_combo_hits(on_battlefield, commander_cast_turn, combo_requirements, cmd_names)
                     else:
                         cond = (
                             (cast_combo_turn & cast_wincon_turn & (payoff_count >= 2) & (turn >= 5))
@@ -844,8 +940,9 @@ def run_simulation_batch_vectorized(
                     cond = (combat_damage_total >= 90) | ((combat_damage_turn >= 36) & (turn >= 5))
                     reasons = np.array([f"Projected combat pressure reached {float(v):.1f} effective damage." for v in combat_damage_total], dtype=object)
                 elif w == "Commander Damage":
-                    cond = commander_damage_total >= 21
-                    reasons = np.array([f"Projected commander damage reached {float(v):.1f}." for v in commander_damage_total], dtype=object)
+                    commander_damage_peak = commander_damage_total.max(axis=(1, 2))
+                    cond = commander_damage_peak >= 21
+                    reasons = np.array([f"Projected commander damage reached {float(v):.1f}." for v in commander_damage_peak], dtype=object)
                 elif w == "Poison":
                     cond = poison_total >= 10
                     reasons = np.array([f"Projected poison counters reached {float(v):.1f}." for v in poison_total], dtype=object)
@@ -859,7 +956,6 @@ def run_simulation_batch_vectorized(
                     cond = (turn >= 6) & (engine_count >= 2) & counter_or_stax
                     reasons = np.full(batch_n, "Lock pieces and engines combined into a board state opponents are unlikely to beat.", dtype=object)
                 elif w == "Alt Win":
-                    generic_alt = (current_turn_cast & (deck.alt_win_code[np.newaxis, :] == 1)).any(axis=1)
                     upkeep_alt = (
                         ((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 2)).any(axis=1)
                         | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 3)).any(axis=1) & (artifact_count >= 20))
@@ -869,8 +965,8 @@ def run_simulation_batch_vectorized(
                         | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 7)).any(axis=1) & (library_size <= 0))
                         | (((on_battlefield & ~current_turn_cast) & (deck.alt_win_code[np.newaxis, :] == 8)).any(axis=1) & (hand_size <= 0))
                     )
-                    cond = generic_alt | upkeep_alt
-                    reasons = np.full(batch_n, "An explicit alternate-win condition is live.", dtype=object)
+                    cond = upkeep_alt
+                    reasons = np.full(batch_n, "A supported alternate-win condition is live.", dtype=object)
                 else:
                     cond = np.zeros(batch_n, dtype=bool)
                     reasons = np.array([""] * batch_n, dtype=object)
@@ -892,10 +988,11 @@ def run_simulation_batch_vectorized(
             dead_counter.update(dead_names)
             global_run = run_offset + i
             if global_run < 20:
+                commander_turns = [int(turn_value) for turn_value in commander_cast_turn[i].tolist() if int(turn_value) > 0]
                 decision_samples.append(
                     {
                         "run": int(global_run),
-                        "commander_cast_turn": int(commander_cast_turn[i]) if commander_cast_turn[i] > 0 else None,
+                        "commander_cast_turn": min(commander_turns) if commander_turns else None,
                         "ramp_online_turn": int(ramp_online_turn[i]) if ramp_online_turn[i] > 0 else None,
                         "draw_engine_turn": int(draw_engine_turn[i]) if draw_engine_turn[i] > 0 else None,
                         "dead_cards": dead_names[:5],
@@ -935,7 +1032,7 @@ def run_simulation_batch_vectorized(
     phase_engine = np.vstack(all_phase_engine)
     phase_win = np.vstack(all_phase_win)
     mulligans = np.concatenate(all_mulligans)
-    cmd_turn = np.concatenate(all_commander_turn)
+    cmd_turn = np.concatenate(all_commander_turn, axis=0)
     draw_engine_turn = np.concatenate(all_draw_engine_turn)
     cards_seen = np.concatenate(all_cards_seen)
     seen_masks = np.vstack(all_seen_masks)
@@ -950,7 +1047,11 @@ def run_simulation_batch_vectorized(
 
     p_mana4_t3 = float((mana[:, 2] >= 4).mean()) if turn_limit >= 3 else 0.0
     p_mana5_t4 = float((mana[:, 3] >= 5).mean()) if turn_limit >= 4 else 0.0
-    cmd_turns = [int(x) for x in cmd_turn if x > 0]
+    per_run_cmd_turn = []
+    for row in cmd_turn.tolist():
+        turns = [int(x) for x in row if int(x) > 0]
+        per_run_cmd_turn.append(min(turns) if turns else 0)
+    cmd_turns = [turn for turn in per_run_cmd_turn if turn > 0]
 
     failure_modes = {
         "mana_screw": float((mana[:, min(2, turn_limit - 1)] < 3).mean()) if turn_limit >= 3 else 0.0,
@@ -1041,7 +1142,7 @@ def run_simulation_batch_vectorized(
         p_on_curve = float((mana[:, on_turn - 1] >= mv).mean())
         mana_curve_points.append({"mana_value": mv, "on_curve_turn": on_turn, "p_on_curve": p_on_curve})
 
-    commander_cast_dist = Counter([str(int(x)) if x > 0 else "never" for x in cmd_turn])
+    commander_cast_dist = Counter(str(turn) if turn > 0 else "never" for turn in per_run_cmd_turn)
     engine_online_dist = Counter([str(int(x)) if x > 0 else "never" for x in draw_engine_turn])
     mulligan_funnel = Counter([str(int(x)) for x in mulligans])
     dead_cards_top = [{"card": k, "count": v, "rate": v / runs} for k, v in dead_counter.most_common(20)]
@@ -1064,7 +1165,10 @@ def run_simulation_batch_vectorized(
                 row["kept_hand"] = [deck.names[j] for j in step.get("kept_hand_idx", []) if 0 <= int(j) < len(deck.names)]
             mull_steps.append(row)
 
-        opening_names = [deck.names[j] for j in np.where(opening_masks[idx])[0].tolist()]
+        kept_indices = []
+        if idx < len(all_mulligan_logs) and all_mulligan_logs[idx]:
+            kept_indices = all_mulligan_logs[idx][-1].get("kept_hand_idx", [])
+        opening_names = [deck.names[j] for j in kept_indices if 0 <= int(j) < len(deck.names)]
         turn_rows = []
         for t in range(min(turn_limit, wt if wt > 0 else turn_limit)):
             draw_name = None
@@ -1117,13 +1221,77 @@ def run_simulation_batch_vectorized(
         for t in range(turn_limit)
     }
 
+    reference_trace = {}
+    if runs > 0 and len(all_mulligan_logs) > 0:
+        kept_indices = all_mulligan_logs[0][-1].get("kept_hand_idx", []) if all_mulligan_logs[0] else []
+        opening_names = [deck.names[j] for j in kept_indices if 0 <= int(j) < len(deck.names)]
+        turn_rows = []
+        for t in range(turn_limit):
+            draw_name = deck.names[int(draw_idx_all[0, t])] if int(draw_idx_all[0, t]) >= 0 else None
+            land_name = deck.names[int(land_idx_all[0, t])] if int(land_idx_all[0, t]) >= 0 else None
+            cast_names = [deck.names[j] for j in np.where(cast_by_turn_all[0, t])[0].tolist()]
+            if bool(phase_win[0, t]):
+                phase = "win_attempt"
+            elif bool(phase_engine[0, t]):
+                phase = "engine"
+            else:
+                phase = "setup"
+            turn_rows.append(
+                {
+                    "turn": int(t + 1),
+                    "draw": draw_name,
+                    "land": land_name,
+                    "casts": cast_names,
+                    "actions": int(actions[0, t]),
+                    "mana_total": int(mana[0, t]),
+                    "phase": phase,
+                }
+            )
+        reference_trace = {
+            "opening_hand": opening_names,
+            "mulligans_taken": int(mulligans[0]) if mulligans.size else 0,
+            "mulligan_steps": [
+                {
+                    "attempt": int(step.get("attempt", 0)),
+                    "hand": [deck.names[j] for j in step.get("hand_idx", []) if 0 <= int(j) < len(deck.names)],
+                    "kept": bool(step.get("kept", False)),
+                    **({"bottom_count": int(step.get("bottom_count", 0))} if "bottom_count" in step else {}),
+                    **(
+                        {
+                            "kept_hand": [
+                                deck.names[j]
+                                for j in step.get("kept_hand_idx", [])
+                                if 0 <= int(j) < len(deck.names)
+                            ]
+                        }
+                        if "kept_hand_idx" in step
+                        else {}
+                    ),
+                }
+                for step in (all_mulligan_logs[0] or [])
+            ],
+            "commander_slots": [name for name in cmd_names if name],
+            "commander_tax_slots": [0] * MAX_COMMANDERS,
+            "commander_casts_by_slot": [1 if int(value) > 0 else 0 for value in cmd_turn[0].tolist()] if cmd_turn.size else [0] * MAX_COMMANDERS,
+            "commander_damage_by_slot": [[0.0] * 3 for _ in range(MAX_COMMANDERS)],
+            "turns": turn_rows,
+        }
+
+    coverage_summary = summarize_compiled_execs(compiled_exec)
+
     summary = {
         "runs": runs,
-        "seed": int(seed),
+        "seed": int(resolved.seed),
         "policy": policy,
         "turn_limit": turn_limit,
         "selected_wincons": selected_wincons,
         "backend_used": "vectorized",
+        "resolved_policy": asdict(resolved.policy),
+        "opponent_profile": asdict(resolved.opponent),
+        "commander_slots": [name for name in resolved.commander_slots if name],
+        "ir_version": 2,
+        "coverage_summary": coverage_summary,
+        "support_confidence": coverage_summary.get("support_confidence", 0.0),
         "batch_size": int(batch_size),
         "vectorization_stats": {
             "deck_size": int(deck_size),
@@ -1151,6 +1319,7 @@ def run_simulation_batch_vectorized(
         "card_impacts": card_impacts,
         "fastest_wins": fastest_wins,
         "decision_samples": decision_samples,
+        "reference_trace": reference_trace,
         "graph_payloads": {
             "mana_percentiles": mana_percentiles,
             "mana_hit_table": mana_hit_table,
@@ -1167,7 +1336,7 @@ def run_simulation_batch_vectorized(
             "dead_cards_top": dead_cards_top,
         },
         "color_profile": {
-            "color_identity_size": color_identity_size,
+            "color_identity_size": resolved.color_identity_size,
         },
         "combo_detection": {
             "source_live": combo_source_live,
