@@ -848,6 +848,7 @@ body {
 /* Workspace banner base styles. The final enforcement block lives at EOF. */
 :root {
   --workspace-banner-height: 240px;
+  --workspace-banner-solid-stop: 40%;
   --banner-blue-strong: #0b46b7;
   --banner-blue-base: #155eef;
   --banner-blue-soft: #5b8cff;
@@ -888,7 +889,10 @@ body {
 
 .workspace-banner-backdrop-media {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--workspace-banner-solid-stop);
   display: grid;
 }
 
@@ -909,15 +913,18 @@ body {
 
 .workspace-banner-backdrop-gradient {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--workspace-banner-solid-stop);
   background:
     linear-gradient(
       94deg,
-      rgba(8, 30, 86, 0.96) 0%,
-      rgba(21, 94, 239, 0.92) 24%,
-      rgba(21, 94, 239, 0.7) 42%,
-      rgba(21, 94, 239, 0.44) 60%,
-      rgba(21, 94, 239, 0.2) 78%,
+      rgba(8, 30, 86, 0.98) 0%,
+      rgba(21, 94, 239, 0.9) 20%,
+      rgba(21, 94, 239, 0.66) 42%,
+      rgba(21, 94, 239, 0.38) 64%,
+      rgba(21, 94, 239, 0.16) 82%,
       rgba(21, 94, 239, 0.08) 100%
     );
 }
@@ -4246,11 +4253,11 @@ body::after {
   background:
     linear-gradient(
       90deg,
-      rgba(8, 30, 86, 0.96) 0%,
-      rgba(21, 94, 239, 0.92) 24%,
-      rgba(21, 94, 239, 0.7) 42%,
-      rgba(21, 94, 239, 0.44) 60%,
-      rgba(21, 94, 239, 0.2) 78%,
+      rgba(8, 30, 86, 0.98) 0%,
+      rgba(21, 94, 239, 0.9) 20%,
+      rgba(21, 94, 239, 0.66) 42%,
+      rgba(21, 94, 239, 0.38) 64%,
+      rgba(21, 94, 239, 0.16) 82%,
       rgba(21, 94, 239, 0.08) 100%
     );
 }
