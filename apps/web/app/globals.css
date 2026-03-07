@@ -913,18 +913,16 @@ body {
 
 .workspace-banner-backdrop-gradient {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: var(--workspace-banner-solid-stop);
+  inset: 0;
   background:
     linear-gradient(
       94deg,
       rgba(8, 30, 86, 0.98) 0%,
-      rgba(21, 94, 239, 0.9) 20%,
-      rgba(21, 94, 239, 0.66) 42%,
-      rgba(21, 94, 239, 0.38) 64%,
-      rgba(21, 94, 239, 0.16) 82%,
+      rgba(16, 74, 197, 0.98) 24%,
+      rgba(21, 94, 239, 0.98) var(--workspace-banner-solid-stop),
+      rgba(21, 94, 239, 0.78) 56%,
+      rgba(21, 94, 239, 0.42) 72%,
+      rgba(21, 94, 239, 0.18) 86%,
       rgba(21, 94, 239, 0.08) 100%
     );
 }
@@ -4254,10 +4252,11 @@ body::after {
     linear-gradient(
       90deg,
       rgba(8, 30, 86, 0.98) 0%,
-      rgba(21, 94, 239, 0.9) 20%,
-      rgba(21, 94, 239, 0.66) 42%,
-      rgba(21, 94, 239, 0.38) 64%,
-      rgba(21, 94, 239, 0.16) 82%,
+      rgba(16, 74, 197, 0.98) 24%,
+      rgba(21, 94, 239, 0.98) var(--workspace-banner-solid-stop),
+      rgba(21, 94, 239, 0.78) 56%,
+      rgba(21, 94, 239, 0.42) 72%,
+      rgba(21, 94, 239, 0.18) 86%,
       rgba(21, 94, 239, 0.08) 100%
     );
 }
