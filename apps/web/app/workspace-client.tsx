@@ -56,12 +56,6 @@ type BannerArt = {
   right?: string;
   names: string[];
 };
-type BannerLayout = {
-  solidStart: number;
-  solidEnd: number;
-  artStart: number;
-  artEnd: number;
-};
 
 const TABS = [
   "Deck Analysis",
@@ -535,13 +529,9 @@ export default function HomePage() {
   const [decklistPanelView, setDecklistPanelView] = useState<"Decklist" | "Tagged Decklist">("Decklist");
   const [mobilePane, setMobilePane] = useState<"controls" | "deck" | "views">("controls");
   const [bannerFallbackArt, setBannerFallbackArt] = useState<BannerArt>({ mode: "none", names: [] });
-  const [bannerLayout, setBannerLayout] = useState<BannerLayout>({ solidStart: 0, solidEnd: 0, artStart: 0, artEnd: 0 });
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   const decklistInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const shellRef = useRef<HTMLDivElement | null>(null);
-  const sidebarBannerRef = useRef<HTMLDivElement | null>(null);
   const detailBannerRef = useRef<HTMLDivElement | null>(null);
-  const mainBannerRef = useRef<HTMLDivElement | null>(null);
   const mainBannerPrimaryRef = useRef<HTMLDivElement | null>(null);
   const mainBannerInsightRef = useRef<HTMLDivElement | null>(null);
   const mobileBannerRef = useRef<HTMLDivElement | null>(null);
@@ -1125,25 +1115,6 @@ export default function HomePage() {
     };
 
     const measure = () => {
-      const shellRect = shellRef.current?.getBoundingClientRect();
-      const sidebarRect = sidebarBannerRef.current?.getBoundingClientRect();
-      const detailRect = detailBannerRef.current?.getBoundingClientRect();
-      const mainRect = mainBannerRef.current?.getBoundingClientRect();
-      if (!shellRect || !sidebarRect) return;
-      const nextLayout: BannerLayout = {
-        solidStart: 0,
-        solidEnd: Math.round(sidebarRect.right - shellRect.left),
-        artStart: detailRect ? Math.round(detailRect.left - shellRect.left) : Math.round(sidebarRect.right - shellRect.left),
-        artEnd: mainRect ? Math.round(mainRect.right - shellRect.left) : Math.round(shellRect.width),
-      };
-      setBannerLayout((prev) =>
-        prev.solidStart === nextLayout.solidStart &&
-        prev.solidEnd === nextLayout.solidEnd &&
-        prev.artStart === nextLayout.artStart &&
-        prev.artEnd === nextLayout.artEnd
-          ? prev
-          : nextLayout,
-      );
       setPaneSolidWidth(detailBannerRef.current, detailBannerTitleRef.current, { min: 180, maxRatio: 0.72, reserve: 96 });
       setPaneSolidWidth(mainBannerPrimaryRef.current, mainBannerTitleRef.current, { min: 180, maxRatio: 0.55, reserve: 120 });
       setPaneSolidWidth(mainBannerInsightRef.current, insightBannerTitleRef.current, { min: 160, maxRatio: 0.8, reserve: 48 });
@@ -1155,7 +1126,7 @@ export default function HomePage() {
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
-    [shellRef.current, sidebarBannerRef.current, detailBannerRef.current, mainBannerRef.current]
+    [detailBannerRef.current, mainBannerPrimaryRef.current, mainBannerInsightRef.current, mobileBannerRef.current]
       .filter((element): element is HTMLDivElement => Boolean(element))
       .forEach((element) => observer.observe(element));
     window.addEventListener("resize", measure);
@@ -1605,18 +1576,18 @@ export default function HomePage() {
     return cardDisplay(name)?.art_crop || "";
   }
 
-  function renderBannerArtStage() {
+  function renderBannerBackdrop(className: string) {
     const hasLeft = Boolean(bannerArt.left);
     const hasRight = bannerArt.mode === "split" && Boolean(bannerArt.right);
     return (
-      <div className="workspace-banner-art-zone" aria-hidden="true">
+      <div className={className} aria-hidden="true">
         {hasLeft ? (
-          <div className={`workspace-banner-art-media ${hasRight ? "is-split" : "is-single"}`}>
-            <div className="workspace-banner-art-panel" style={{ backgroundImage: `url("${bannerArt.left}")` }} />
-            {hasRight ? <div className="workspace-banner-art-panel" style={{ backgroundImage: `url("${bannerArt.right}")` }} /> : null}
+          <div className={`workspace-banner-backdrop-media ${hasRight ? "is-split" : "is-single"}`}>
+            <div className="workspace-banner-backdrop-panel" style={{ backgroundImage: `url("${bannerArt.left}")` }} />
+            {hasRight ? <div className="workspace-banner-backdrop-panel" style={{ backgroundImage: `url("${bannerArt.right}")` }} /> : null}
           </div>
         ) : null}
-        <div className="workspace-banner-art-gradient" />
+        <div className="workspace-banner-backdrop-gradient" />
       </div>
     );
   }
@@ -2824,17 +2795,12 @@ export default function HomePage() {
     );
   }
 
-  const shellStyle = {
-    "--banner-solid-end": `${bannerLayout.solidEnd}px`,
-    "--banner-art-start": `${bannerLayout.artStart}px`,
-    "--banner-art-end": `${bannerLayout.artEnd}px`,
-  } as CSSProperties;
-
   return (
-    <div ref={shellRef} className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`} style={shellStyle}>
+    <div className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`}>
       <div className="workspace-banner workspace-banner-desktop">
-        <div ref={sidebarBannerRef} className="workspace-banner-pane workspace-banner-pane-sidebar">
-          <div className="workspace-banner-solid workspace-banner-solid-only">
+        {renderBannerBackdrop("workspace-banner-backdrop workspace-banner-backdrop-desktop")}
+        <div className="workspace-banner-pane workspace-banner-pane-sidebar">
+          <div className="workspace-banner-slab workspace-banner-slab-sidebar">
             <h2 className="wordmark" aria-label="Deck.Check">
               <span className="wordmark-glyph">D</span>
               <span className="wordmark-text">
@@ -2844,41 +2810,39 @@ export default function HomePage() {
           </div>
         </div>
         <div ref={detailBannerRef} className="workspace-banner-pane workspace-banner-pane-detail">
-          <div className="workspace-banner-solid workspace-banner-solid-title">
+          <div className="workspace-banner-slab workspace-banner-slab-title">
             <div ref={detailBannerTitleRef} className="workspace-banner-title">
               {deckBannerTitle}
             </div>
           </div>
-          {renderBannerArtStage()}
         </div>
-        <div ref={mainBannerRef} className="workspace-banner-pane workspace-banner-pane-main">
+        <div className="workspace-banner-pane workspace-banner-pane-main">
           <div
             className={`workspace-banner-main-grid ${selectedCard ? "insight-open" : ""}`}
             style={{ gridTemplateColumns: selectedCard ? "minmax(0, 1fr) 360px" : "minmax(0, 1fr) 0px" }}
           >
             <div ref={mainBannerPrimaryRef} className="workspace-banner-main-cell">
-              <div className="workspace-banner-solid workspace-banner-solid-title">
+              <div className="workspace-banner-slab workspace-banner-slab-title">
                 <div ref={mainBannerTitleRef} className="workspace-banner-title">
                   {viewBannerTitle}
                 </div>
               </div>
-              {renderBannerArtStage()}
             </div>
             <div ref={mainBannerInsightRef} className={`workspace-banner-main-cell workspace-banner-insight-cell ${selectedCard ? "is-open" : ""}`}>
-              <div className="workspace-banner-solid workspace-banner-solid-title">
+              <div className="workspace-banner-slab workspace-banner-slab-title">
                 <div ref={insightBannerTitleRef} className="workspace-banner-title">
                   {selectedCard || ""}
                 </div>
               </div>
-              {renderBannerArtStage()}
             </div>
           </div>
         </div>
       </div>
 
       <div className="workspace-banner workspace-banner-mobile">
+        {renderBannerBackdrop("workspace-banner-backdrop workspace-banner-backdrop-mobile")}
         <div ref={mobileBannerRef} className="workspace-banner-pane workspace-banner-pane-mobile">
-          <div className="workspace-banner-solid workspace-banner-solid-title">
+          <div className={`workspace-banner-slab ${mobilePane === "controls" ? "workspace-banner-slab-sidebar" : "workspace-banner-slab-title"}`}>
             {mobilePane === "controls" ? (
               <h2 className="wordmark" aria-label="Deck.Check">
                 <span className="wordmark-glyph">D</span>
@@ -2892,7 +2856,6 @@ export default function HomePage() {
               </div>
             )}
           </div>
-          {mobilePane === "controls" ? null : renderBannerArtStage()}
         </div>
       </div>
 
