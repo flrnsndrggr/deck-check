@@ -595,6 +595,15 @@ class CardDataService:
             payload = resp.json()
         return {k: payload.get(k) for k in CARD_FIELDS + ["games"]}
 
+    def get_random_display(self, query: str, art_preference: str = "clean") -> Dict[str, Any]:
+        fallback: Dict[str, Any] = {}
+        for _ in range(4):
+            card = self.fetch_random_card(query)
+            fallback = self.card_display(card, art_preference=art_preference)
+            if fallback.get("art_crop"):
+                return fallback
+        return fallback
+
     def fetch_collection_by_name(self, names: List[str]) -> List[Dict[str, Any]]:
         cards: List[Dict[str, Any]] = []
         with httpx.Client(timeout=30) as client:

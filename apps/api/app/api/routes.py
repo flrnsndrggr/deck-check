@@ -115,6 +115,7 @@ from app.workers.tasks import get_vector_backend_status, run_simulation_task
 from app.core.config import settings
 
 router = APIRouter(prefix="/api")
+RANDOM_BANNER_ART_QUERY = "game:paper -is:token -is:funny unique:art"
 
 
 def _project_summary(row: Project) -> ProjectSummary:
@@ -764,6 +765,21 @@ def cards_display(names: str, art_preference: str = "clean"):
     requested = [n.strip() for n in names.split(",") if n.strip()]
     display = CardDataService().get_display_by_names(requested, art_preference=art_preference)
     return {"cards": display}
+
+
+@router.get("/cards/random-art")
+def random_art(art_preference: str = "clean"):
+    try:
+        payload = CardDataService().get_random_display(RANDOM_BANNER_ART_QUERY, art_preference=art_preference)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Random banner art could not be fetched.") from exc
+    if not payload.get("art_crop"):
+        raise HTTPException(status_code=404, detail="Random banner art is unavailable.")
+    return {
+        "name": payload.get("name") or "",
+        "art_crop": payload.get("art_crop"),
+        "scryfall_uri": payload.get("scryfall_uri") or "",
+    }
 
 
 @router.post("/guides/generate", response_model=GuideResponse)

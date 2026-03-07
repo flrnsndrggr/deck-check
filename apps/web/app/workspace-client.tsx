@@ -24,6 +24,7 @@ const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 const DEFAULT_API_BASE = "https://deck-check.onrender.com";
 const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
 const LOCAL_DRAFT_STORAGE_KEY = "deckcheck.local-draft.v1";
+const BANNER_FALLBACK_STORAGE_KEY = "deckcheck.banner-fallback.v1";
 
 function sanitizeApiBase(raw: string): string {
   const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
@@ -49,6 +50,18 @@ function apiUrl(path: string): string {
   return `${base}${normalized}`;
 }
 type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
+type BannerArt = {
+  mode: "none" | "fallback" | "single" | "split";
+  left?: string;
+  right?: string;
+  names: string[];
+};
+type BannerLayout = {
+  solidStart: number;
+  solidEnd: number;
+  artStart: number;
+  artEnd: number;
+};
 
 const TABS = [
   "Deck Analysis",
@@ -152,6 +165,10 @@ function normalizeProjectNameKey(value: string) {
     .replace(/\s+/g, " ")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "untitled-project";
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function decklistStatusMeta(
@@ -517,8 +534,17 @@ export default function HomePage() {
   const [selectedCurveMv, setSelectedCurveMv] = useState<number | null>(null);
   const [decklistPanelView, setDecklistPanelView] = useState<"Decklist" | "Tagged Decklist">("Decklist");
   const [mobilePane, setMobilePane] = useState<"controls" | "deck" | "views">("controls");
+  const [bannerFallbackArt, setBannerFallbackArt] = useState<BannerArt>({ mode: "none", names: [] });
+  const [bannerLayout, setBannerLayout] = useState<BannerLayout>({ solidStart: 0, solidEnd: 0, artStart: 0, artEnd: 0 });
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   const decklistInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const sidebarBannerRef = useRef<HTMLDivElement | null>(null);
+  const detailBannerRef = useRef<HTMLDivElement | null>(null);
+  const mainBannerRef = useRef<HTMLDivElement | null>(null);
+  const mainBannerPrimaryRef = useRef<HTMLDivElement | null>(null);
+  const mainBannerInsightRef = useRef<HTMLDivElement | null>(null);
+  const mobileBannerRef = useRef<HTMLDivElement | null>(null);
   const [authUser, setAuthUser] = useState<{ id: number; email: string; is_admin?: boolean; role?: string; status?: string; plan?: string } | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -550,6 +576,10 @@ export default function HomePage() {
   const chartObserverRef = useRef<IntersectionObserver | null>(null);
   const chartElementsRef = useRef<Record<string, HTMLDivElement | null>>({});
   const visibleChartsRef = useRef<Record<string, boolean>>({});
+  const detailBannerTitleRef = useRef<HTMLDivElement | null>(null);
+  const mainBannerTitleRef = useRef<HTMLDivElement | null>(null);
+  const insightBannerTitleRef = useRef<HTMLDivElement | null>(null);
+  const mobileBannerTitleRef = useRef<HTMLDivElement | null>(null);
   const activeRunRef = useRef(0);
   const draftRestoredRef = useRef(false);
 
@@ -695,6 +725,23 @@ export default function HomePage() {
     [activeTabGroup, availableTabs],
   );
   const hasOutcomeResources = availableTabs.length > 0;
+  const deckBannerTitle = analysis?.deck_name ? `Decklist: ${analysis.deck_name}` : "Decklist";
+  const viewBannerTitle = hasOutcomeResources ? tab : "View Panel";
+  const mobileBannerTitle = mobilePane === "controls" ? "Deck.Check" : mobilePane === "deck" ? deckBannerTitle : (selectedCard || viewBannerTitle);
+  const commanderBannerArt = useMemo<BannerArt>(() => {
+    const crops = commanderNames
+      .map((name) => cardArtCrop(name))
+      .filter((src): src is string => Boolean(src))
+      .slice(0, 2);
+    if (crops.length >= 2) {
+      return { mode: "split", left: crops[0], right: crops[1], names: commanderNames.slice(0, 2) };
+    }
+    if (crops[0]) {
+      return { mode: "single", left: crops[0], names: commanderNames.slice(0, 1) };
+    }
+    return { mode: "none", names: [] };
+  }, [commanderNames, displayMap]);
+  const bannerArt = commanderBannerArt.mode !== "none" ? commanderBannerArt : bannerFallbackArt;
   const winMetrics = simRes?.summary?.win_metrics || {};
   const uncertainty = simRes?.summary?.uncertainty || {};
   const fastestWins = simRes?.summary?.fastest_wins || [];
@@ -1012,6 +1059,111 @@ export default function HomePage() {
     const raf = window.requestAnimationFrame(focusTarget);
     return () => window.cancelAnimationFrame(raf);
   }, [entryMode]);
+
+  useEffect(() => {
+    if (commanderBannerArt.mode !== "none" || typeof window === "undefined") return;
+    let cancelled = false;
+    try {
+      const cached = window.sessionStorage.getItem(BANNER_FALLBACK_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed?.left) {
+          setBannerFallbackArt({
+            mode: "fallback",
+            left: String(parsed.left),
+            names: Array.isArray(parsed.names) ? parsed.names.filter((name: unknown) => typeof name === "string") : [],
+          });
+          return;
+        }
+      }
+    } catch {
+      // Ignore storage parse failures and fetch a fresh fallback.
+    }
+
+    void (async () => {
+      try {
+        const params = new URLSearchParams({ art_preference: artPreference });
+        const res = await fetch(apiUrl(`/api/cards/random-art?${params.toString()}`));
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (cancelled || !payload?.art_crop) return;
+        const nextArt: BannerArt = {
+          mode: "fallback",
+          left: String(payload.art_crop),
+          names: payload?.name ? [String(payload.name)] : [],
+        };
+        setBannerFallbackArt(nextArt);
+        try {
+          window.sessionStorage.setItem(BANNER_FALLBACK_STORAGE_KEY, JSON.stringify(nextArt));
+        } catch {
+          // Ignore storage write failures.
+        }
+      } catch {
+        return;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artPreference, commanderBannerArt.mode]);
+
+  useEffect(() => {
+    const setPaneSolidWidth = (
+      pane: HTMLDivElement | null,
+      title: HTMLDivElement | null,
+      options: { min: number; maxRatio: number; reserve: number },
+    ) => {
+      if (!pane || !title) return;
+      const paneWidth = pane.getBoundingClientRect().width;
+      const titleWidth = Math.ceil(title.scrollWidth || title.getBoundingClientRect().width || 0);
+      const maxWidth = Math.max(options.min, Math.floor(Math.max(0, paneWidth - options.reserve)));
+      const ratioWidth = Math.max(options.min, Math.floor(paneWidth * options.maxRatio));
+      const upperBound = Math.min(maxWidth, ratioWidth);
+      const clamped = clampNumber(titleWidth + 48, options.min, upperBound);
+      pane.style.setProperty("--banner-solid-width", `${clamped}px`);
+    };
+
+    const measure = () => {
+      const shellRect = shellRef.current?.getBoundingClientRect();
+      const sidebarRect = sidebarBannerRef.current?.getBoundingClientRect();
+      const detailRect = detailBannerRef.current?.getBoundingClientRect();
+      const mainRect = mainBannerRef.current?.getBoundingClientRect();
+      if (!shellRect || !sidebarRect) return;
+      const nextLayout: BannerLayout = {
+        solidStart: 0,
+        solidEnd: Math.round(sidebarRect.right - shellRect.left),
+        artStart: detailRect ? Math.round(detailRect.left - shellRect.left) : Math.round(sidebarRect.right - shellRect.left),
+        artEnd: mainRect ? Math.round(mainRect.right - shellRect.left) : Math.round(shellRect.width),
+      };
+      setBannerLayout((prev) =>
+        prev.solidStart === nextLayout.solidStart &&
+        prev.solidEnd === nextLayout.solidEnd &&
+        prev.artStart === nextLayout.artStart &&
+        prev.artEnd === nextLayout.artEnd
+          ? prev
+          : nextLayout,
+      );
+      setPaneSolidWidth(detailBannerRef.current, detailBannerTitleRef.current, { min: 180, maxRatio: 0.72, reserve: 96 });
+      setPaneSolidWidth(mainBannerPrimaryRef.current, mainBannerTitleRef.current, { min: 180, maxRatio: 0.55, reserve: 120 });
+      setPaneSolidWidth(mainBannerInsightRef.current, insightBannerTitleRef.current, { min: 160, maxRatio: 0.8, reserve: 48 });
+      if (mobilePane !== "controls") {
+        setPaneSolidWidth(mobileBannerRef.current, mobileBannerTitleRef.current, { min: 180, maxRatio: 0.6, reserve: 80 });
+      }
+    };
+
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    [shellRef.current, sidebarBannerRef.current, detailBannerRef.current, mainBannerRef.current]
+      .filter((element): element is Element => Boolean(element))
+      .forEach((element) => observer.observe(element));
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [deckBannerTitle, viewBannerTitle, mobilePane, selectedCard]);
 
   function pct(v: unknown) {
     const n = typeof v === "number" ? v : 0;
@@ -1447,6 +1599,26 @@ export default function HomePage() {
 
   function cardThumb(name: string) {
     return cardDisplay(name)?.small || cardDisplay(name)?.normal || "";
+  }
+
+  function cardArtCrop(name: string) {
+    return cardDisplay(name)?.art_crop || "";
+  }
+
+  function renderBannerArtStage() {
+    const hasLeft = Boolean(bannerArt.left);
+    const hasRight = bannerArt.mode === "split" && Boolean(bannerArt.right);
+    return (
+      <div className="workspace-banner-art-zone" aria-hidden="true">
+        {hasLeft ? (
+          <div className={`workspace-banner-art-media ${hasRight ? "is-split" : "is-single"}`}>
+            <div className="workspace-banner-art-panel" style={{ backgroundImage: `url("${bannerArt.left}")` }} />
+            {hasRight ? <div className="workspace-banner-art-panel" style={{ backgroundImage: `url("${bannerArt.right}")` }} /> : null}
+          </div>
+        ) : null}
+        <div className="workspace-banner-art-gradient" />
+      </div>
+    );
   }
 
   function toggleRole(role: string) {
@@ -2652,8 +2824,78 @@ export default function HomePage() {
     );
   }
 
+  const shellStyle = {
+    "--banner-solid-end": `${bannerLayout.solidEnd}px`,
+    "--banner-art-start": `${bannerLayout.artStart}px`,
+    "--banner-art-end": `${bannerLayout.artEnd}px`,
+  } as CSSProperties;
+
   return (
-    <div className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`}>
+    <div ref={shellRef} className={`ui-shell ${detailOpen ? "detail-open" : ""} mobile-pane-${mobilePane}`} style={shellStyle}>
+      <div className="workspace-banner workspace-banner-desktop">
+        <div ref={sidebarBannerRef} className="workspace-banner-pane workspace-banner-pane-sidebar">
+          <div className="workspace-banner-solid workspace-banner-solid-only">
+            <h2 className="wordmark" aria-label="Deck.Check">
+              <span className="wordmark-glyph">D</span>
+              <span className="wordmark-text">
+                Deck<span className="wordmark-dot">.</span>Check
+              </span>
+            </h2>
+          </div>
+        </div>
+        <div ref={detailBannerRef} className="workspace-banner-pane workspace-banner-pane-detail">
+          <div className="workspace-banner-solid workspace-banner-solid-title">
+            <div ref={detailBannerTitleRef} className="workspace-banner-title">
+              {deckBannerTitle}
+            </div>
+          </div>
+          {renderBannerArtStage()}
+        </div>
+        <div ref={mainBannerRef} className="workspace-banner-pane workspace-banner-pane-main">
+          <div
+            className={`workspace-banner-main-grid ${selectedCard ? "insight-open" : ""}`}
+            style={{ gridTemplateColumns: selectedCard ? "minmax(0, 1fr) 360px" : "minmax(0, 1fr) 0px" }}
+          >
+            <div ref={mainBannerPrimaryRef} className="workspace-banner-main-cell">
+              <div className="workspace-banner-solid workspace-banner-solid-title">
+                <div ref={mainBannerTitleRef} className="workspace-banner-title">
+                  {viewBannerTitle}
+                </div>
+              </div>
+              {renderBannerArtStage()}
+            </div>
+            <div ref={mainBannerInsightRef} className={`workspace-banner-main-cell workspace-banner-insight-cell ${selectedCard ? "is-open" : ""}`}>
+              <div className="workspace-banner-solid workspace-banner-solid-title">
+                <div ref={insightBannerTitleRef} className="workspace-banner-title">
+                  {selectedCard || ""}
+                </div>
+              </div>
+              {renderBannerArtStage()}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="workspace-banner workspace-banner-mobile">
+        <div ref={mobileBannerRef} className="workspace-banner-pane workspace-banner-pane-mobile">
+          <div className="workspace-banner-solid workspace-banner-solid-title">
+            {mobilePane === "controls" ? (
+              <h2 className="wordmark" aria-label="Deck.Check">
+                <span className="wordmark-glyph">D</span>
+                <span className="wordmark-text">
+                  Deck<span className="wordmark-dot">.</span>Check
+                </span>
+              </h2>
+            ) : (
+              <div ref={mobileBannerTitleRef} className="workspace-banner-title">
+                {mobileBannerTitle}
+              </div>
+            )}
+          </div>
+          {mobilePane === "controls" ? null : renderBannerArtStage()}
+        </div>
+      </div>
+
       <div className="mobile-workspace-bar" role="tablist" aria-label="Workspace panels">
         <button
           type="button"
@@ -2696,21 +2938,15 @@ export default function HomePage() {
       </button>
       <aside className="ui-sidebar">
         <div className="sidebar-scroll stack">
-          <div className="block stack sidebar-brand" data-surface="1">
-            <h2 className="wordmark" aria-label="Deck.Check">
-              <span className="wordmark-glyph">D</span>
-              <span className="wordmark-text">
-                Deck<span className="wordmark-dot">.</span>Check
-              </span>
-            </h2>
-            {sidebarProgressMeta.show ? (
+          {sidebarProgressMeta.show ? (
+            <div className="block stack sidebar-brand" data-surface="1">
               <div className="sidebar-status-row">
                 <span className="status-chip" data-tone={progressTone(sidebarProgressMeta)}>
                   {sidebarProgressMeta.label}
                 </span>
               </div>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
 
           <div className="sidebar-group sidebar-pane">
             <div className="sidebar-section-label">Import</div>
@@ -2896,8 +3132,6 @@ export default function HomePage() {
         <div className="stack decklist-shell">
           <div className="panel-title-row">
             <div className="panel-heading-group">
-              <div className="panel-kicker">Deck Intake</div>
-              <h3>{analysis?.deck_name ? `Decklist: ${analysis.deck_name}` : "Decklist"}</h3>
               <div className="decklist-status-row">
                 <span className="status-chip" data-tone={progressTone(decklistProgressMeta)}>
                   {decklistProgressMeta.show ? decklistProgressMeta.label : "Editing"}
@@ -3055,8 +3289,6 @@ export default function HomePage() {
         <div className="stack outcome-header">
           <div className="panel-title-row">
             <div className="panel-heading-group">
-              <div className="panel-kicker">Analysis Stage</div>
-              <h3>{hasOutcomeResources ? tab : "View Panel"}</h3>
               {analysisProgressMeta.show || hasOutcomeResources ? (
                 <div className="decklist-status-row">
                   <span className="status-chip" data-tone={progressTone(analysisProgressMeta)}>
