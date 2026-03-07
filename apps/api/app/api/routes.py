@@ -307,6 +307,16 @@ def _http_probe(url: str, *, headers: dict | None = None, params: dict | None = 
         return response
 
 
+def _validate_deck_compat(cards, commander, card_map, bracket, **kwargs):
+    try:
+        return validate_deck(cards, commander, card_map, bracket, **kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword argument" not in message:
+            raise
+        return validate_deck(cards, commander, card_map, bracket)
+
+
 @router.get("/auth/session", response_model=AuthSessionResponse)
 def get_auth_session(request: Request, db: Session = Depends(get_db)):
     ctx = get_session_context(db, request, allow_missing=True)
@@ -560,7 +570,7 @@ def parse_deck(req: DeckParseRequest, db: Session = Depends(get_db)):
     parsed = parse_decklist(req.decklist_text)
     names = [c.name for c in parsed.cards]
     card_map = CardDataService().get_cards_by_name(names)
-    v_errors, v_warnings, bracket_report = validate_deck(parsed.cards, parsed.commander, card_map, req.bracket)
+    v_errors, v_warnings, bracket_report = _validate_deck_compat(parsed.cards, parsed.commander, card_map, req.bracket)
     parsed.errors.extend(v_errors)
     parsed.warnings.extend(v_warnings)
     commander_names = commander_names_from_cards(parsed.cards, fallback_commander=parsed.commander)
@@ -579,7 +589,7 @@ def tag_deck(req: TagRequest):
     card_map = svc.get_cards_by_name([c.name for c in req.cards])
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
     cards, archetypes, lines = tag_cards(req.cards, card_map, commander_names, use_global_prefix=req.global_tags)
-    _, _, bracket_report = validate_deck(cards, req.commander, card_map, None, tagged_cards=cards)
+    _, _, bracket_report = _validate_deck_compat(cards, req.commander, card_map, None, tagged_cards=cards)
     type_profile = compute_type_theme_profile(req.cards, card_map)
     display = svc.get_display_by_names([c.name for c in req.cards], art_preference=req.art_preference)
     commander_colors = combined_color_identity(card_map, commander_names)
@@ -613,7 +623,7 @@ def run_sim(req: SimRunRequest):
     commander_colors = combined_color_identity(card_map, commander_names)
     effective_bracket = req.bracket
     if effective_bracket is None:
-        _, _, inferred_report = validate_deck(req.cards, req.commander, card_map, None, tagged_cards=req.cards)
+        _, _, inferred_report = _validate_deck_compat(req.cards, req.commander, card_map, None, tagged_cards=req.cards)
         effective_bracket = int(inferred_report.get("bracket", 3) or 3)
     payload["bracket"] = effective_bracket
     payload["color_identity"] = commander_colors
@@ -684,7 +694,7 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     commander_names = commander_names_from_cards(req.cards, fallback_commander=req.commander)
     commander_colors = combined_color_identity(card_map, commander_names)
     commander_ci = "".join(commander_colors)
-    _, _, bracket_report = validate_deck(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
+    _, _, bracket_report = _validate_deck_compat(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
     primary_commander = primary_commander_name(commander_names) or req.commander
     commander_display = commander_display_name(commander_names) or req.commander
     combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names)

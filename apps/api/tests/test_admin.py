@@ -85,9 +85,11 @@ def test_admin_endpoints_reject_non_admin(monkeypatch):
 
 def test_admin_problem_feed_and_user_management(monkeypatch):
     client, SessionLocal = _client_with_db(monkeypatch)
-    admin_session = _register(client, "florian.sonderegger@me.com")
-    csrf = admin_session["csrf_token"]
+    _register(client, "florian.sonderegger@me.com")
     _register(client, "member@example.com")
+    login = client.post("/api/auth/login", json={"email": "florian.sonderegger@me.com", "password": "averysecurepw"})
+    assert login.status_code == 200
+    csrf = login.json()["csrf_token"]
 
     db = SessionLocal()
     try:
