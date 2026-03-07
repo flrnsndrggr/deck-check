@@ -1033,6 +1033,15 @@ def _choose_attackers(state: GameState) -> List[PermanentState]:
     return stable_sorted(attackers, key=lambda perm: (-perm.card.power, -perm.card.evasion_score, perm.permanent_id))
 
 
+def _untap_for_extra_combat(state: GameState) -> None:
+    for perm in state.battlefield:
+        if not perm.card.is_creature or not perm.tapped:
+            continue
+        perm.tapped = False
+        perm.used_this_turn = False
+        state.used_this_turn.discard(perm.permanent_id)
+
+
 def _token_attack_units(state: GameState) -> List[Dict[str, Any]]:
     units: List[Dict[str, Any]] = []
     for sig, count in state.token_buckets.items():
@@ -1585,6 +1594,7 @@ def simulate_one(
             )
             while state.extra_combats > 0 and turn_outcome.tier != OutcomeTier.HARD_WIN:
                 state.extra_combats -= 1
+                _untap_for_extra_combat(state)
                 extra_attackers = _choose_attackers(state)
                 if not extra_attackers:
                     break

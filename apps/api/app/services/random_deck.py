@@ -2109,10 +2109,35 @@ class RandomDeckService:
         drafted.sort(key=lambda row: row.score, reverse=True)
         return drafted
 
-    def _select_final_deck(self, drafted: Sequence[GeneratedDeck]) -> GeneratedDeck | None:
+    def _deck_meets_minimum_requirements(self, context: DeckContext, deck: GeneratedDeck) -> bool:
+        coverage = deck.metrics.get("coverage", {})
+        for key, (floor, _ceiling) in context.plan.coverage_targets.items():
+            if floor <= 0:
+                continue
+            actual = float(coverage.get(key, 0.0) or 0.0)
+            if actual < float(floor) * 0.95:
+                return False
+        support = deck.metrics.get("support_counts", {})
+        for axis, target in context.plan.support_targets.items():
+            if int(support.get(axis, 0) or 0) < int(target):
+                return False
+        primary_completion = float(
+            deck.metrics.get("package_completion", {}).get("primary", {}).get("completion", 0.0) or 0.0
+        )
+        return primary_completion >= 0.95
+
+    def _select_final_deck(
+        self,
+        drafted: Sequence[GeneratedDeck],
+        context: DeckContext | None = None,
+    ) -> GeneratedDeck | None:
         if not drafted:
             return None
         ranked = sorted(drafted, key=lambda row: row.score, reverse=True)
+        if context is not None:
+            eligible = [row for row in ranked if self._deck_meets_minimum_requirements(context, row)]
+            if eligible:
+                ranked = eligible
         best = ranked[0].score
         top_group = [row for row in ranked if row.score >= best - 0.5][:4]
         pool = top_group or ranked[:1]
@@ -2210,7 +2235,7 @@ class RandomDeckService:
                 continue
 
             drafted = self._generate_candidate_decks(context, candidates, count=24)
-            generated = self._select_final_deck(drafted)
+            generated = self._select_final_deck(drafted, context)
             if generated is None:
                 last_errors = [f"Could not draft a candidate deck for {commander_display_name(context.commander_names)}."]
                 continue
