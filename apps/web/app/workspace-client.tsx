@@ -19,36 +19,11 @@ import {
 import ReactMarkdown from "react-markdown";
 import { chartTheme, resolveTheme, type ResolvedTheme } from "./theme";
 import { ManaText } from "./mana-symbols";
+import { apiUrl } from "./api-url";
 
-const RAW_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-const DEFAULT_API_BASE = "https://deck-check.onrender.com";
 const AUTH_CSRF_STORAGE_KEY = "deckcheck.csrf";
 const LOCAL_DRAFT_STORAGE_KEY = "deckcheck.local-draft.v1";
 const BANNER_FALLBACK_STORAGE_KEY = "deckcheck.banner-fallback.v1";
-
-function sanitizeApiBase(raw: string): string {
-  const trimmed = raw.trim().replace(/^[\s'"]+|[\s'"]+$/g, "");
-  const match = trimmed.match(/https?:\/\/[^\s'"]+/i);
-  return (match ? match[0] : trimmed).replace(/\/+$/g, "");
-}
-
-const API_BASE = sanitizeApiBase(RAW_API_BASE);
-
-function apiUrl(path: string): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  const base =
-    API_BASE ||
-    (typeof window !== "undefined" && window.location.hostname.endsWith("netlify.app")
-      ? DEFAULT_API_BASE
-      : "");
-  if (!base) {
-    return normalized;
-  }
-  if (!/^https?:\/\/[^\s]+$/i.test(base)) {
-    throw new Error(`Invalid NEXT_PUBLIC_API_BASE value "${RAW_API_BASE}".`);
-  }
-  return `${base}${normalized}`;
-}
 type UrlImportNotice = { tone: "info" | "warn" | "error"; text: string } | null;
 type BannerArt = {
   mode: "none" | "fallback" | "single" | "split";
