@@ -48,8 +48,15 @@ def _commander_role(commander_cards: Sequence[Any], exec_lookup: Mapping[str, An
         exec_ops = set(getattr(getattr(card_exec, "coverage_summary", None), "executable", ()) or ())
         if "#Engine" in tags or {"draw", "mana_source", "upkeep_trigger", "etb_trigger"} & exec_ops:
             scores["engine"] += 2.0
-        if {"#Payoff", "#Wincon", "#Combo"} & tags:
+        if {"#Payoff", "#Wincon", "#Combo", "#Voltron"} & tags:
             scores["payoff"] += 2.0
+        if "#Voltron" in tags or float(getattr(card, "commander_buff", 0.0) or 0.0) > 0.0:
+            scores["payoff"] += 1.35
+        if bool(getattr(card, "is_creature", False)) and (
+            float(getattr(card, "power", 0.0) or 0.0) >= 5.0
+            or float(getattr(card, "evasion_score", 0.0) or 0.0) >= 0.4
+        ):
+            scores["payoff"] += 0.8
         if {"#Protection", "#Control", "#Counter", "#Stax"} & tags:
             scores["support"] += 1.5
         scores["value"] += 0.5
@@ -57,9 +64,10 @@ def _commander_role(commander_cards: Sequence[Any], exec_lookup: Mapping[str, An
 
 
 def compile_deck_fingerprint(cards: Sequence[Any], commander_cards: Sequence[Any], exec_lookup: Mapping[str, Any]) -> DeckFingerprint:
-    tag_list = _tags(cards)
+    all_cards = list(cards) + list(commander_cards)
+    tag_list = _tags(all_cards)
     tag_counts = {tag: tag_list.count(tag) for tag in set(tag_list)}
-    creature_count = sum(1 for card in cards if bool(getattr(card, "is_creature", False)))
+    creature_count = sum(1 for card in all_cards if bool(getattr(card, "is_creature", False)))
     low_curve = sum(1 for card in cards if int(getattr(card, "mana_value", 0) or 0) <= 2)
     fast_mana = tag_counts.get("#FastMana", 0) + sum(
         1
@@ -80,9 +88,30 @@ def compile_deck_fingerprint(cards: Sequence[Any], commander_cards: Sequence[Any
     combo_tutor_support = min(tag_counts.get("#Tutor", 0), max(0, combo_piece_count) + 1)
     combo_engine_support = min(tag_counts.get("#Engine", 0), max(0, combo_piece_count) + 1)
 
+    commander_pressure = sum(
+        max(0.0, float(getattr(card, "power", 0.0) or 0.0) - 3.0)
+        + max(0.0, float(getattr(card, "evasion_score", 0.0) or 0.0) * 3.0)
+        for card in commander_cards
+        if bool(getattr(card, "is_creature", False))
+    )
+    voltron_support = (
+        tag_counts.get("#Voltron", 0) * 1.5
+        + sum(float(getattr(card, "commander_buff", 0.0) or 0.0) for card in cards) * 0.45
+        + sum(
+            max(0.0, float(getattr(card, "extra_combat_factor", 1.0) or 1.0) - 1.0)
+            for card in cards
+        )
+    )
+
     plan_scores = {
         "combo": combo_piece_count * 2.2 + combo_tutor_support * 0.6 + combo_engine_support * 0.35,
-        "combat": creature_count * 0.18 + tag_counts.get("#Payoff", 0) * 0.35 + sum(float(getattr(card, "combat_buff", 0.0) or 0.0) for card in cards),
+        "combat": (
+            creature_count * 0.18
+            + tag_counts.get("#Payoff", 0) * 0.35
+            + sum(float(getattr(card, "combat_buff", 0.0) or 0.0) for card in cards)
+            + commander_pressure * 0.4
+            + voltron_support
+        ),
         "poison": sum(1 for card in cards if bool(getattr(card, "infect", False)) or float(getattr(card, "toxic", 0.0) or 0.0) > 0) * 2.2
         + sum(1 for card in cards if bool(getattr(card, "proliferate", False))) * 0.8,
         "drain": sum(1 for summary in exec_summaries if summary and any(op in summary.executable for op in ("drain_all_opponents", "burn_all_opponents", "burn_single_target"))) * 1.3,
@@ -282,7 +311,12 @@ def _card_plan_contribution(card: Any, fingerprint: DeckFingerprint, winlines: S
         score += 0.9
     if fingerprint.primary_plan == "combo" and ("#Combo" in tags or "#Wincon" in tags or "#Engine" in tags):
         score += 1.35
-    if fingerprint.primary_plan == "combat" and (bool(getattr(card, "is_creature", False)) or float(getattr(card, "combat_buff", 0.0) or 0.0) > 0):
+    if fingerprint.primary_plan == "combat" and (
+        bool(getattr(card, "is_creature", False))
+        or float(getattr(card, "combat_buff", 0.0) or 0.0) > 0
+        or float(getattr(card, "commander_buff", 0.0) or 0.0) > 0
+        or "#Voltron" in tags
+    ):
         score += 1.15
     if fingerprint.primary_plan == "poison" and (bool(getattr(card, "infect", False)) or float(getattr(card, "toxic", 0.0) or 0.0) > 0 or bool(getattr(card, "proliferate", False))):
         score += 1.25
@@ -383,9 +417,13 @@ def _two_turn_commander_value(card: Any, card_exec: Any, fingerprint: DeckFinger
     if fingerprint.commander_role == "support":
         value += 0.9
     if fingerprint.commander_role == "payoff":
-        value += 0.4
+        value += 1.0
     value += 0.7 if {"draw", "mana_source", "etb_trigger", "upkeep_trigger", "attack_trigger"} & exec_ops else 0.0
     value += 0.25 if bool(getattr(card, "is_creature", False)) and (bool(getattr(card, "has_haste", False)) or float(getattr(card, "evasion_score", 0.0) or 0.0) > 0.2) else 0.0
+    if "#Voltron" in set(getattr(card, "tags", []) or []):
+        value += 0.75
+    if float(getattr(card, "power", 0.0) or 0.0) >= 5.0:
+        value += 0.45
     return round(value, 4)
 
 
@@ -406,6 +444,8 @@ def _card_immediate_value(card: Any, card_exec: Any, intent: str, fingerprint: D
         value += 1.4 if intent in {"protect", "convert"} else 0.25
     if {"#Payoff", "#Wincon"} & tags:
         value += 1.35 if intent in {"convert", "race"} else 0.45
+    if "#Voltron" in tags or float(getattr(card, "commander_buff", 0.0) or 0.0) > 0.0:
+        value += 1.4 if intent in {"assemble", "convert", "race"} else 0.55
     if "#Engine" in tags:
         value += 1.2 if intent in {"develop", "assemble"} else 0.55
     if "create_tokens" in exec_ops and fingerprint.primary_plan in {"combat", "drain"}:

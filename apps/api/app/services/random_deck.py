@@ -1788,6 +1788,45 @@ class RandomDeckService:
         selected_names = {row.entry.name for row in selected}
         coverage = self._coverage_counts(selected)
         support_counts = self._support_counts(selected)
+        primary_core_floor = max(
+            4,
+            int(PACKAGE_LIBRARY.get(context.plan.primary_package, {}).get("core_target", 12) * 0.55),
+        )
+        secondary_core_floors = {
+            package: max(
+                2,
+                int(
+                    round(
+                        PACKAGE_LIBRARY.get(package, {}).get("secondary_target", 6) * 0.65
+                    )
+                ),
+            )
+            for package in context.plan.secondary_packages
+        }
+
+        def preserves_package_core(current: TaggedCandidate) -> bool:
+            remaining = [row for row in selected if row is not current]
+            if context.plan.primary_package in current.packages:
+                completion, _weakest_axis, _axis_state = self._package_completion_state(
+                    remaining,
+                    context.plan.primary_package,
+                    secondary=False,
+                )
+                primary_count = sum(1 for row in remaining if context.plan.primary_package in row.packages)
+                if completion < 0.95 or primary_count < primary_core_floor:
+                    return False
+            for package in context.plan.secondary_packages:
+                if package not in current.packages:
+                    continue
+                completion, _weakest_axis, _axis_state = self._package_completion_state(
+                    remaining,
+                    package,
+                    secondary=True,
+                )
+                package_count = sum(1 for row in remaining if package in row.packages)
+                if completion < 0.85 or package_count < secondary_core_floors[package]:
+                    return False
+            return True
 
         def try_swap(
             must_roles: Set[str] | None = None,
@@ -1809,7 +1848,7 @@ class RandomDeckService:
                 return False
             removable = sorted(selected, key=lambda row: self._retention_score(row, context, selected))
             for current in removable:
-                if context.plan.primary_package in current.packages and must_package != context.plan.primary_package:
+                if context.plan.primary_package in current.packages and must_package != context.plan.primary_package and not preserves_package_core(current):
                     continue
                 if must_roles and (must_roles & current.roles):
                     continue
