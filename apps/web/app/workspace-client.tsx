@@ -1156,7 +1156,7 @@ export default function HomePage() {
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     [shellRef.current, sidebarBannerRef.current, detailBannerRef.current, mainBannerRef.current]
-      .filter((element): element is Element => Boolean(element))
+      .filter((element): element is HTMLDivElement => Boolean(element))
       .forEach((element) => observer.observe(element));
     window.addEventListener("resize", measure);
     return () => {
