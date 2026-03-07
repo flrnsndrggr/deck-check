@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 from app.core.config import settings
 from app.schemas.deck import CardEntry
 from app.services.commander_utils import commander_names_from_cards
+from app.services.mana import hydrate_card_entries_mana
 
 # Universal taxonomy: broad functional tags + pace modifiers + archetype axes.
 # This avoids replacing one ad-hoc list with another per-deck list.
@@ -544,6 +545,7 @@ def tag_cards(
     archetypes = compute_archetype_weights(cards, card_map, commander_context)
     apply_context_tags(cards, card_map, archetypes, commander_context)
     _normalise_relations(cards)
+    hydrate_card_entries_mana(cards, card_map)
 
     lines = []
     for c in cards:

@@ -38,6 +38,8 @@ class CardEntry(BaseModel):
     qty: int
     name: str
     section: str = "deck"
+    mana_cost: Optional[str] = None
+    mana_value: Optional[float] = None
     tags: List[str] = Field(default_factory=list)
     confidence: Dict[str, float] = Field(default_factory=dict)
     explanations: Dict[str, str] = Field(default_factory=dict)

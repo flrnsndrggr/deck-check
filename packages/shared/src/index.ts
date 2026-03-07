@@ -4,6 +4,8 @@ export const CardEntrySchema = z.object({
   qty: z.number().int(),
   name: z.string(),
   section: z.string().default("deck"),
+  mana_cost: z.string().nullable().optional(),
+  mana_value: z.number().nullable().optional(),
   tags: z.array(z.string()).default([]),
   confidence: z.record(z.number()).default({}),
   explanations: z.record(z.string()).default({}),
