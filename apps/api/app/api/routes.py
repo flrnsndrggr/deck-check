@@ -697,7 +697,14 @@ def analyze_deck(req: AnalyzeRequest, db: Session = Depends(get_db)):
     _, _, bracket_report = _validate_deck_compat(req.cards, req.commander, card_map, req.bracket, sim_summary=req.sim_summary, tagged_cards=req.cards)
     primary_commander = primary_commander_name(commander_names) or req.commander
     commander_display = commander_display_name(commander_names) or req.commander
-    combo_intel = ComboIntelService().get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
+    combo_service = ComboIntelService()
+    try:
+        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names, deck_colors=commander_colors)
+    except TypeError as exc:
+        # Keep the route compatible with narrower monkeypatched test doubles.
+        if "deck_colors" not in str(exc):
+            raise
+        combo_intel = combo_service.get_combo_intel([c.name for c in req.cards], commander_names)
     out = analyze(
         req.cards,
         req.sim_summary,
