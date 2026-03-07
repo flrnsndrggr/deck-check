@@ -562,16 +562,26 @@ def choose_best_action(
         cmd_cost = int(getattr(card, "mana_value", 0) or 0) + (state.commander_tax[slot] if slot is not None else 0)
         if cmd_cost > potential_mana:
             continue
+        commander_tags = set(getattr(card, "tags", []) or [])
+        commander_score = _two_turn_commander_value(card, card_exec, fingerprint) + (0.4 if intent in {"develop", "assemble"} else 0.0)
+        if fingerprint.primary_plan == "combat" and (
+            "#Voltron" in commander_tags
+            or float(getattr(card, "power", 0.0) or 0.0) >= 5.0
+            or float(getattr(card, "evasion_score", 0.0) or 0.0) >= 0.4
+        ):
+            commander_score += 1.25 if intent in {"assemble", "convert", "race"} else 0.75
         candidates.append(
             {
                 "type": "commander",
                 "card": card,
                 "card_exec": card_exec,
-                "score": _two_turn_commander_value(card, card_exec, fingerprint) + (0.4 if intent in {"develop", "assemble"} else 0.0),
-                "distance": 0.5 if fingerprint.commander_role in {"engine", "support"} else 0.15,
+                "score": commander_score,
+                "distance": 0.8 if fingerprint.commander_role in {"engine", "support"} else (0.7 if "#Voltron" in commander_tags or fingerprint.primary_plan == "combat" else 0.15),
                 "efficiency": max(0.0, 1.4 - 0.12 * int(getattr(card, "mana_value", 0) or 0)),
                 "exposure": (
-                    0.25 if threat_model and fingerprint.commander_role == "payoff" and intent != "convert" else 0.0
+                    0.1 if threat_model and (fingerprint.commander_role == "payoff" or "#Voltron" in commander_tags) and intent in {"convert", "race"} else (
+                        0.25 if threat_model and fingerprint.commander_role == "payoff" and intent != "convert" else 0.0
+                    )
                 ) + (
                     0.75
                     * max(

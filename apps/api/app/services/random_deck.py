@@ -1788,45 +1788,6 @@ class RandomDeckService:
         selected_names = {row.entry.name for row in selected}
         coverage = self._coverage_counts(selected)
         support_counts = self._support_counts(selected)
-        primary_core_floor = max(
-            4,
-            int(PACKAGE_LIBRARY.get(context.plan.primary_package, {}).get("core_target", 12) * 0.55),
-        )
-        secondary_core_floors = {
-            package: max(
-                2,
-                int(
-                    round(
-                        PACKAGE_LIBRARY.get(package, {}).get("secondary_target", 6) * 0.65
-                    )
-                ),
-            )
-            for package in context.plan.secondary_packages
-        }
-
-        def preserves_package_core(current: TaggedCandidate) -> bool:
-            remaining = [row for row in selected if row is not current]
-            if context.plan.primary_package in current.packages:
-                completion, _weakest_axis, _axis_state = self._package_completion_state(
-                    remaining,
-                    context.plan.primary_package,
-                    secondary=False,
-                )
-                primary_count = sum(1 for row in remaining if context.plan.primary_package in row.packages)
-                if completion < 0.95 or primary_count < primary_core_floor:
-                    return False
-            for package in context.plan.secondary_packages:
-                if package not in current.packages:
-                    continue
-                completion, _weakest_axis, _axis_state = self._package_completion_state(
-                    remaining,
-                    package,
-                    secondary=True,
-                )
-                package_count = sum(1 for row in remaining if package in row.packages)
-                if completion < 0.85 or package_count < secondary_core_floors[package]:
-                    return False
-            return True
 
         def try_swap(
             must_roles: Set[str] | None = None,
@@ -1848,7 +1809,7 @@ class RandomDeckService:
                 return False
             removable = sorted(selected, key=lambda row: self._retention_score(row, context, selected))
             for current in removable:
-                if context.plan.primary_package in current.packages and must_package != context.plan.primary_package and not preserves_package_core(current):
+                if context.plan.primary_package in current.packages and must_package != context.plan.primary_package and not self._preserves_package_core_after_removal(context, selected, current):
                     continue
                 if must_roles and (must_roles & current.roles):
                     continue
@@ -1904,6 +1865,106 @@ class RandomDeckService:
             coverage = self._coverage_counts(selected)
 
         return selected[:spell_target]
+
+    def _preserves_package_core_after_removal(
+        self,
+        context: DeckContext,
+        selected: Sequence[TaggedCandidate],
+        current: TaggedCandidate,
+    ) -> bool:
+        remaining = [row for row in selected if row is not current]
+        primary_core_floor = max(
+            4,
+            int(PACKAGE_LIBRARY.get(context.plan.primary_package, {}).get("core_target", 12) * 0.55),
+        )
+        if context.plan.primary_package in current.packages:
+            completion, _weakest_axis, _axis_state = self._package_completion_state(
+                remaining,
+                context.plan.primary_package,
+                secondary=False,
+            )
+            primary_count = sum(1 for row in remaining if context.plan.primary_package in row.packages)
+            if completion < 0.95 or primary_count < primary_core_floor:
+                return False
+        for package in context.plan.secondary_packages:
+            if package not in current.packages:
+                continue
+            completion, _weakest_axis, _axis_state = self._package_completion_state(
+                remaining,
+                package,
+                secondary=True,
+            )
+            secondary_floor = max(
+                2,
+                int(round(PACKAGE_LIBRARY.get(package, {}).get("secondary_target", 6) * 0.65)),
+            )
+            package_count = sum(1 for row in remaining if package in row.packages)
+            if completion < 0.85 or package_count < secondary_floor:
+                return False
+        return True
+
+    def _force_coverage_floor(
+        self,
+        context: DeckContext,
+        candidates: Sequence[TaggedCandidate],
+        selected: List[TaggedCandidate],
+        spell_target: int,
+        coverage_key: str,
+        floor: float,
+    ) -> List[TaggedCandidate]:
+        selected_names = {row.entry.name for row in selected}
+        while self._coverage_counts(selected).get(coverage_key, 0.0) < floor * 0.95:
+            replacement = self._pick_candidate(
+                candidates,
+                selected_names,
+                context,
+                selected,
+                must_coverage_key=coverage_key,
+            )
+            if replacement is None:
+                break
+            if len(selected) < spell_target:
+                selected.append(replacement)
+                selected_names.add(replacement.entry.name)
+                continue
+            removable = sorted(selected, key=lambda row: self._retention_score(row, context, selected))
+            removed = False
+            for current in removable:
+                if current.coverage.get(coverage_key, 0.0) > 0:
+                    continue
+                if not self._preserves_package_core_after_removal(context, selected, current):
+                    continue
+                selected.remove(current)
+                selected.append(replacement)
+                selected_names.remove(current.entry.name)
+                selected_names.add(replacement.entry.name)
+                removed = True
+                break
+            if not removed:
+                break
+        return selected[:spell_target]
+
+    def _materialize_generated_deck(
+        self,
+        context: DeckContext,
+        selected: Sequence[TaggedCandidate],
+        draft_seed: int | None = None,
+    ) -> GeneratedDeck:
+        spell_target = 100 - context.plan.land_count - len(context.commander_names)
+        trimmed = list(selected[:spell_target])
+        score, metrics = self._score_generated_deck(context, trimmed)
+        interaction_count = int(math.ceil(self._coverage_counts(trimmed).get("role:interaction", 0.0)))
+        commander_entries = [CardEntry(qty=1, name=name, section="commander") for name in context.commander_names]
+        land_entries = self._build_mana_base(context, [row.card for row in trimmed])
+        cards = [*commander_entries, *land_entries, *[row.entry for row in trimmed]]
+        return GeneratedDeck(
+            cards=cards,
+            selected=trimmed,
+            interaction_count=interaction_count,
+            score=score,
+            metrics=metrics,
+            draft_seed=draft_seed,
+        )
 
     def _score_generated_deck(self, context: DeckContext, selected: Sequence[TaggedCandidate]) -> tuple[float, Dict[str, Any]]:
         coverage = self._coverage_counts(selected)
@@ -2279,6 +2340,19 @@ class RandomDeckService:
                 last_errors = [f"Could not draft a candidate deck for {commander_display_name(context.commander_names)}."]
                 continue
 
+            spell_target = 100 - context.plan.land_count - len(context.commander_names)
+            interaction_floor = context.plan.coverage_targets.get("role:interaction", (10.0, 14.0))[0]
+            if float(generated.metrics.get("coverage", {}).get("role:interaction", generated.interaction_count)) < interaction_floor * 0.95:
+                repaired_selected = self._force_coverage_floor(
+                    context,
+                    candidates,
+                    list(generated.selected),
+                    spell_target,
+                    "role:interaction",
+                    interaction_floor,
+                )
+                generated = self._materialize_generated_deck(context, repaired_selected, generated.draft_seed)
+
             names = [entry.name for entry in generated.cards]
             fetched_map = self.card_service.get_cards_by_name(names)
             card_map = {**{name: card for name, card in zip(context.commander_names, context.commander_cards)}, **fetched_map}
@@ -2286,7 +2360,6 @@ class RandomDeckService:
             if errors:
                 last_errors = errors
                 continue
-            interaction_floor = context.plan.coverage_targets.get("role:interaction", (10.0, 14.0))[0]
             actual_interaction = float(generated.metrics.get("coverage", {}).get("role:interaction", generated.interaction_count))
             if actual_interaction < interaction_floor * 0.95:
                 last_errors = [f"Could not satisfy cheap interaction floor for {commander_display_name(context.commander_names)}."]
