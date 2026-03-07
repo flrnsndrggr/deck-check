@@ -785,7 +785,7 @@ def _profile_from_card(card: Dict[str, Any], deck_context: DeckContext, entry: C
             elif tag in MAPPABLE_DECK_TAGS or (tag.startswith("#") and tag.endswith("Typal")):
                 evidence["deck-tag"].append(f"Mapped deck tag {tag} into shared theme schema.")
             else:
-                unsupported.append(f"Deck tag {tag} cannot be mapped into the shared strict-comparison schema.")
+                evidence["deck-tag"].append(f"Ignored descriptive deck tag {tag}; it is not part of strict-comparison proof.")
 
     for theme in theme_participation:
         for item in theme.evidence:

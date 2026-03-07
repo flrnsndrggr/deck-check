@@ -522,6 +522,26 @@ def run_simulation_batch_vectorized(
     batch_size: int = 512,
     resolved_config: ResolvedSimConfig | Dict | None = None,
 ) -> Dict:
+    if runs <= 128 or commander not in (None, [], "") or combo_variants or combo_source_live or threat_model:
+        from sim.engine import run_simulation_batch as run_simulation_batch_python
+
+        return run_simulation_batch_python(
+            cards=cards,
+            commander=commander,
+            runs=runs,
+            turn_limit=turn_limit,
+            policy=policy,
+            multiplayer=multiplayer,
+            threat_model=threat_model,
+            seed=seed,
+            bracket=bracket,
+            primary_wincons=primary_wincons,
+            color_identity_size=color_identity_size,
+            combo_variants=combo_variants,
+            combo_source_live=combo_source_live,
+            resolved_config=resolved_config,
+        )
+
     resolved = coerce_resolved_sim_config(
         resolved_config,
         commander=commander,

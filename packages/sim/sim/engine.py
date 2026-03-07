@@ -292,6 +292,11 @@ def _combo_hard_win(state: GameState, combo_variant: Dict[str, Any] | None) -> t
         return None, None
     result_class = str(combo_variant.get("result_class") or "")
     recipe = str(combo_variant.get("recipe") or "").strip()
+    generic_reason = recipe or "All required cards for the CommanderSpellbook combo are live."
+    if not result_class:
+        if combo_variant.get("keys") or combo_variant.get("cards"):
+            return "Combo", generic_reason
+        return None, None
     if result_class in {"near_infinite", "engine_loop"}:
         return None, None
     if result_class == "infinite_mana" and not _has_combo_sink(state):
@@ -374,6 +379,34 @@ def _is_early_action(card: Card) -> bool:
     return card.mana_value <= 2 and any(t in card.tags for t in ["#Ramp", "#Draw", "#Setup"])
 
 
+def _keep_hand(hand: List[Card], policy: str, colors_required: int) -> bool:
+    lands = sum(1 for card in hand if _is_land(card))
+    fixing = sum(1 for card in hand if "#Fixing" in card.tags)
+    early_actions = sum(1 for card in hand if _is_early_action(card))
+    if policy == "optimized":
+        return 2 <= lands <= 4 and (fixing >= max(0, colors_required - 1) or early_actions >= 1)
+    if policy == "commander-centric":
+        return 2 <= lands <= 5
+    if policy == "hold-commander":
+        return 3 <= lands <= 5
+    return 2 <= lands <= 5
+
+
+def _fallback_bottom_indices(hand7: List[Card], bottoms: int) -> Tuple[int, ...]:
+    ordering = stable_sorted(
+        list(range(len(hand7))),
+        key=lambda idx: (
+            0 if _is_land(hand7[idx]) else 1,
+            hand7[idx].mana_value,
+            hand7[idx].name,
+            idx,
+        ),
+    )
+    if bottoms <= 0:
+        return ()
+    return tuple(ordering[-bottoms:])
+
+
 def london_mulligan(
     deck: List[Card],
     policy: str,
@@ -388,13 +421,17 @@ def london_mulligan(
 ) -> tuple[list[Card], int] | tuple[list[Card], int, List[Dict]]:
     def finalize_hand(hand7: List[Card], bottoms: int, bottomed_indices: Tuple[int, ...], plan_bottomed: Tuple[str, ...]) -> tuple[List[Card], List[Card]]:
         keep_count = max(0, len(hand7) - bottoms)
-        bottom_index_set = set(bottomed_indices[:bottoms])
+        effective_indices = bottomed_indices[:bottoms] if bottomed_indices else _fallback_bottom_indices(hand7, bottoms)
+        bottom_index_set = set(effective_indices)
         keep_indices = [idx for idx in range(len(hand7)) if idx not in bottom_index_set][:keep_count]
         hand = [hand7[idx] for idx in keep_indices]
         bottomed_cards = [card for idx, card in enumerate(hand7) if idx in bottom_index_set]
         if capture_log and steps:
             steps[-1]["bottom_count"] = bottoms
-            steps[-1]["bottomed"] = list(plan_bottomed[:bottoms])
+            if plan_bottomed:
+                steps[-1]["bottomed"] = list(plan_bottomed[:bottoms])
+            else:
+                steps[-1]["bottomed"] = [hand7[idx].name for idx in effective_indices]
             steps[-1]["kept_hand"] = [c.name for c in hand]
         return hand, bottomed_cards
 
@@ -407,32 +444,45 @@ def london_mulligan(
         else:
             rng.shuffle(deck)
         hand7 = deck[:7]
-        plan = hand_plan(
-            hand7,
-            fingerprint=fingerprint,
-            winlines=winlines or (),
-            colors_required=colors_required,
-            commander_cards=commander_cards or [],
-            mulligans_taken=mulligans,
-            multiplayer=multiplayer,
-        )
-        keep = plan.keep
+        if fingerprint is None:
+            keep = _keep_hand(hand7, policy, colors_required)
+            bottomed_indices = _fallback_bottom_indices(hand7, mulligans)
+            plan_bottomed = tuple(hand7[idx].name for idx in bottomed_indices)
+            plan_score = 0.0
+            plan_name = "fallback_keep"
+            plan_reasons = ["Fallback mulligan heuristic used because no deck fingerprint is available."]
+        else:
+            plan = hand_plan(
+                hand7,
+                fingerprint=fingerprint,
+                winlines=winlines or (),
+                colors_required=colors_required,
+                commander_cards=commander_cards or [],
+                mulligans_taken=mulligans,
+                multiplayer=multiplayer,
+            )
+            keep = plan.keep
+            bottomed_indices = plan.bottomed_indices
+            plan_bottomed = plan.bottomed
+            plan_score = plan.score
+            plan_name = plan.plan
+            plan_reasons = list(plan.reasons)
         if capture_log:
             steps.append(
                 {
                     "attempt": mulligans,
                     "hand": [c.name for c in hand7],
                     "kept": keep,
-                    "score": plan.score,
-                    "plan": plan.plan,
-                    "reasons": list(plan.reasons),
+                    "score": plan_score,
+                    "plan": plan_name,
+                    "reasons": plan_reasons,
                 }
             )
         if keep:
             bottoms = mulligans
             if multiplayer and mulligans == 1:
                 bottoms = 0
-            hand, bottomed_cards = finalize_hand(hand7, bottoms, plan.bottomed_indices, plan.bottomed)
+            hand, bottomed_cards = finalize_hand(hand7, bottoms, bottomed_indices, plan_bottomed)
             deck[:] = list(hand) + list(deck[7:]) + bottomed_cards
             if capture_log:
                 return hand, mulligans, steps
@@ -442,7 +492,7 @@ def london_mulligan(
             bottoms = mulligans
             if multiplayer and mulligans == 1:
                 bottoms = 0
-            hand, bottomed_cards = finalize_hand(hand7, bottoms, plan.bottomed_indices, plan.bottomed)
+            hand, bottomed_cards = finalize_hand(hand7, bottoms, bottomed_indices, plan_bottomed)
             deck[:] = list(hand) + list(deck[7:]) + bottomed_cards
             if capture_log:
                 return hand, mulligans, steps
@@ -744,6 +794,45 @@ def _pick_tutor_target(state: GameState, fingerprint, winlines) -> Card | None:
     if not state.library:
         return None
     current_distance = min((winline_distance(state, state.hand, line) for line in winlines), default=0.0)
+    live_tags = Counter(tag for perm in state.battlefield for tag in getattr(perm.card, "tags", []) or [])
+    live_tags.update(tag for card in state.hand for tag in getattr(card, "tags", []) or [])
+
+    def _requirement_gap(requirement: str) -> float:
+        req = str(requirement or "").strip().lower()
+        if not req:
+            return 0.0
+        if req in {"combo_piece", "combo"}:
+            return 1.0 if live_tags["#Combo"] <= 0 else 0.0
+        if req in {"engine", "engine_piece"}:
+            return 1.0 if live_tags["#Engine"] <= 0 else 0.0
+        if req in {"sink", "payoff", "wincon"}:
+            return 1.0 if (live_tags["#Payoff"] + live_tags["#Wincon"]) <= 0 else 0.0
+        if req in {"tutor"}:
+            return 1.0 if live_tags["#Tutor"] <= 0 else 0.0
+        if req in {"board_presence", "creature"}:
+            creature_count = sum(1 for perm in state.battlefield if perm.card.is_creature) + int(sum(state.token_buckets.values()))
+            return 1.0 if creature_count <= 0 else 0.0
+        if req in {"protection"}:
+            return 1.0 if live_tags["#Protection"] <= 0 else 0.0
+        return 0.0
+
+    def _candidate_requirement_hits(candidate: Card, requirement: str) -> float:
+        req = str(requirement or "").strip().lower()
+        tags = set(candidate.tags)
+        if req in {"combo_piece", "combo"}:
+            return 1.0 if "#Combo" in tags else 0.0
+        if req in {"engine", "engine_piece"}:
+            return 1.0 if "#Engine" in tags or "#Setup" in tags else 0.0
+        if req in {"sink", "payoff", "wincon"}:
+            return 1.0 if {"#Payoff", "#Wincon"} & tags else 0.0
+        if req in {"tutor"}:
+            return 1.0 if "#Tutor" in tags else 0.0
+        if req in {"board_presence", "creature"}:
+            return 1.0 if candidate.is_creature or candidate.is_permanent else 0.0
+        if req in {"protection"}:
+            return 1.0 if "#Protection" in tags or "#Counter" in tags else 0.0
+        return 0.0
+
     priorities_by_plan = {
         "combo": ["#Combo", "#Wincon", "#Engine", "#Tutor", "#Draw", "#Ramp", "#Setup", "#Protection"],
         "combat": ["#Payoff", "#Wincon", "#Engine", "#Draw", "#Ramp", "#Setup", "#Protection"],
@@ -765,15 +854,22 @@ def _pick_tutor_target(state: GameState, fingerprint, winlines) -> Card | None:
         return len(priorities) + 1
 
     best_pick: Card | None = None
-    best_key: tuple[float, float, float, int, int, str] | None = None
+    best_key: tuple[float, float, float, float, int, int, str] | None = None
     for candidate in state.library:
         projected_hand = list(state.hand) + [candidate]
         projected_distance = min((winline_distance(state, projected_hand, line) for line in winlines), default=current_distance)
         distance_gain = round(current_distance - projected_distance, 4)
         tags = set(candidate.tags)
+        missing_requirement_value = 0.0
+        for line in winlines:
+            for requirement in getattr(line, "requirements", ()) + getattr(line, "sink_requirements", ()):
+                gap = _requirement_gap(requirement)
+                if gap > 0:
+                    missing_requirement_value += gap * _candidate_requirement_hits(candidate, requirement)
         sink_bonus = 0.35 if "#Wincon" in tags or "#Payoff" in tags else 0.0
         protection_bonus = 0.15 if "#Protection" in tags or "#Counter" in tags else 0.0
         key = (
+            round(missing_requirement_value, 4),
             distance_gain,
             sink_bonus,
             protection_bonus,
@@ -1552,6 +1648,10 @@ def simulate_one(
             win_turn = turn
             achieved_wincon = turn_outcome.wincon
             win_reason = turn_outcome.reason
+        elif turn_outcome.tier in {OutcomeTier.MODEL_WIN, OutcomeTier.DOMINANT} and achieved_wincon is None:
+            win_turn = turn
+            achieved_wincon = turn_outcome.wincon
+            win_reason = turn_outcome.reason
 
         if capture_trace:
             turn_trace.append(
@@ -1667,6 +1767,32 @@ def run_simulation_batch(
     combo_source_live: bool = False,
     resolved_config: ResolvedSimConfig | Dict | None = None,
 ) -> Dict:
+    if (
+        runs >= 1024
+        and commander in (None, [], "")
+        and not combo_variants
+        and not combo_source_live
+        and not threat_model
+    ):
+        from sim.engine_vectorized import run_simulation_batch_vectorized
+
+        return run_simulation_batch_vectorized(
+            cards=cards,
+            commander=commander,
+            runs=runs,
+            turn_limit=turn_limit,
+            policy=policy,
+            multiplayer=multiplayer,
+            threat_model=threat_model,
+            seed=seed,
+            bracket=bracket,
+            primary_wincons=primary_wincons,
+            color_identity_size=color_identity_size,
+            combo_variants=combo_variants,
+            combo_source_live=combo_source_live,
+            resolved_config=resolved_config,
+        )
+
     resolved = coerce_resolved_sim_config(
         resolved_config,
         commander=commander,
@@ -1736,7 +1862,7 @@ def run_simulation_batch(
             per_turn_progress[t].append(score)
 
     failure_modes = Counter()
-    win_turns = [r.win_turn for r in results if r.win_turn is not None]
+    hard_win_turns = [r.win_turn for r in results if r.outcome_tier == OutcomeTier.HARD_WIN.value and r.win_turn is not None]
     wincon_counter = Counter(r.achieved_wincon for r in results if r.achieved_wincon)
     outcome_counter = Counter(r.outcome_tier for r in results)
     model_wins = sum(1 for r in results if r.outcome_tier == OutcomeTier.MODEL_WIN.value)
@@ -1945,13 +2071,13 @@ def run_simulation_batch(
             "median_commander_cast_turn": median(cmd_turns) if cmd_turns else None,
         },
         "win_metrics": {
-            "p_win_by_turn_limit": (len(win_turns) / runs) if runs else 0.0,
-            "hard_win_rate": (len(win_turns) / runs) if runs else 0.0,
+            "p_win_by_turn_limit": (len(hard_win_turns) / runs) if runs else 0.0,
+            "hard_win_rate": (len(hard_win_turns) / runs) if runs else 0.0,
             "model_win_rate": (model_wins / runs) if runs else 0.0,
             "dominant_rate": (dominant_positions / runs) if runs else 0.0,
             "lock_established_rate": (lock_established_count / runs) if runs else 0.0,
             "lock_plus_clock_rate": (lock_plus_clock_count / runs) if runs else 0.0,
-            "median_win_turn": median(win_turns) if win_turns else None,
+            "median_win_turn": median(hard_win_turns) if hard_win_turns else None,
             "most_common_wincon": wincon_counter.most_common(1)[0][0] if wincon_counter else None,
             "wincon_distribution": {k: (v / runs) for k, v in wincon_counter.items()},
             "outcome_distribution": {k: (v / runs) for k, v in outcome_counter.items()},
@@ -1959,7 +2085,7 @@ def run_simulation_batch(
         "uncertainty": {
             "p_mana4_t3_ci95": _binom_ci95(p_mana4_t3, runs),
             "p_mana5_t4_ci95": _binom_ci95(p_mana5_t4, runs),
-            "p_win_by_turn_limit_ci95": _binom_ci95((len(win_turns) / runs) if runs else 0.0, runs),
+            "p_win_by_turn_limit_ci95": _binom_ci95((len(hard_win_turns) / runs) if runs else 0.0, runs),
         },
         "plan_progress": {
             t: {
@@ -2003,5 +2129,12 @@ def run_simulation_batch(
             "matched_variants": len(normalized_combo_variants),
         },
     }
+    summary["hard_win_rate"] = summary["win_metrics"]["hard_win_rate"]
+    summary["model_win_rate"] = summary["win_metrics"]["model_win_rate"]
+    summary["dominant_rate"] = summary["win_metrics"]["dominant_rate"]
+    summary["lock_established_rate"] = summary["win_metrics"]["lock_established_rate"]
+    summary["lock_plus_clock_rate"] = summary["win_metrics"]["lock_plus_clock_rate"]
+    summary["outcome_distribution"] = dict(summary["win_metrics"]["outcome_distribution"])
+    summary["most_common_wincon"] = summary["win_metrics"]["most_common_wincon"]
 
     return {"summary": summary}

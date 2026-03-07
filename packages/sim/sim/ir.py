@@ -486,6 +486,13 @@ def _compile_card_exec(card: dict) -> CardExec:
         support_score=_support_score(list(set(exec_cov)), list(set(eval_cov)), list(set(unsupported_cov))),
     )
     notes = tuple(sorted(set(summary.evaluative_only + summary.unsupported)))
+    coverage_class = _coverage_class(summary)
+    if (
+        "Unsupported alternate-win predicate." in summary.unsupported
+        and not alt_rules
+        and any(tag in tags for tag in ("#Wincon", "#Combo", "#Payoff", "#Engine"))
+    ):
+        coverage_class = "evaluative-only" if summary.evaluative_only or summary.executable else "unsupported"
     return CardExec(
         name=str(card.get("name") or ""),
         oracle_id=card.get("oracle_id"),
@@ -495,7 +502,7 @@ def _compile_card_exec(card: dict) -> CardExec:
         triggers={window: tuple(entries) for window, entries in triggers.items()},
         alt_win_rules=tuple(alt_rules),
         combo_roles=combo_roles,
-        coverage=_coverage_class(summary),
+        coverage=coverage_class,
         coverage_summary=summary,
         tags=tags,
         strategic_weight=_strategic_weight(tags, card, summary),

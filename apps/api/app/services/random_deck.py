@@ -976,24 +976,34 @@ class RandomDeckService:
 
     def _candidate_roles(self, card: Dict, entry: CardEntry) -> Set[str]:
         tags = set(entry.tags)
+        txt = _text(card)
+        type_line = _type_line(card)
         roles: Set[str] = set()
-        if "#Ramp" in tags:
+        if "#Ramp" in tags or "{t}: add" in txt or "create a treasure token" in txt or "search your library for a land" in txt:
             roles.add("ramp")
-        if "#Draw" in tags or "#Tutor" in tags:
+        if "#Draw" in tags or "#Tutor" in tags or "draw " in txt or "surveil" in txt or "discover" in txt:
             roles.add("draw")
-        if {"#Removal", "#Counter", "#Boardwipe", "#Protection"} & tags or _is_fog(card):
+        if (
+            {"#Removal", "#Counter", "#Boardwipe", "#Protection"} & tags
+            or _is_fog(card)
+            or "counter target" in txt
+            or "destroy target" in txt
+            or "exile target" in txt
+            or "return target" in txt and "to its owner's hand" in txt
+            or "each opponent sacrifices" in txt
+        ):
             roles.add("interaction")
-        if "#Protection" in tags:
+        if "#Protection" in tags or any(term in txt for term in ["hexproof", "indestructible", "ward", "phase out", "protection from", "can't be the target"]):
             roles.add("protection")
-        if "#Recursion" in tags:
+        if "#Recursion" in tags or any(term in txt for term in ["return target", "from your graveyard", "reanimate"]):
             roles.add("recursion")
-        if "#Boardwipe" in tags:
+        if "#Boardwipe" in tags or "destroy all" in txt or "exile all" in txt or "each creature gets -x/-x" in txt:
             roles.add("boardwipe")
-        if "#Tutor" in tags:
+        if "#Tutor" in tags or "search your library" in txt:
             roles.add("tutor")
         if "#Wincon" in tags or "#Combo" in tags or "#Payoff" in tags:
             roles.add("finisher")
-        if "#Engine" in tags or "#Setup" in tags:
+        if "#Engine" in tags or "#Setup" in tags or "whenever" in txt or ("artifact" in type_line and "{t}: add" in txt):
             roles.add("setup")
         return roles
 
@@ -1020,7 +1030,9 @@ class RandomDeckService:
             packages.add("lifegain")
         if any(term in txt for term in ["landfall", "additional land", "search your library for a land"]):
             packages.add("lands")
-        if "exile" in txt and "return it to the battlefield" in txt:
+        if "exile" in txt and ("return it to the battlefield" in txt or "then return that card to the battlefield" in txt):
+            packages.add("blink")
+        elif context.plan.primary_package == "blink" and "enters the battlefield" in txt and "creature" in type_line:
             packages.add("blink")
         if {"#Counter", "#Removal", "#Boardwipe", "#Stax"} & tags:
             packages.add("control")
@@ -1836,18 +1848,19 @@ class RandomDeckService:
                     break
                 support_counts = self._support_counts(selected)
 
-        def interaction_total() -> int:
-            return sum(1 for row in selected if "interaction" in row.roles)
+        def interaction_total() -> float:
+            return coverage.get("role:interaction", 0.0)
 
-        while interaction_total() < 10:
+        while interaction_total() < 10.0:
             if len(selected) < spell_target:
-                pick = self._pick_candidate(candidates, selected_names, context, selected, must_roles={"interaction"})
+                pick = self._pick_candidate(candidates, selected_names, context, selected, must_coverage_key="role:interaction")
                 if pick is None:
                     break
                 selected.append(pick)
                 selected_names.add(pick.entry.name)
-            elif not try_swap(must_roles={"interaction"}):
+            elif not try_swap(must_coverage_key="role:interaction"):
                 break
+            coverage = self._coverage_counts(selected)
 
         return selected[:spell_target]
 
