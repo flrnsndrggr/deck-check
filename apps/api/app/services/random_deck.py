@@ -2165,6 +2165,10 @@ class RandomDeckService:
             - tension_score
             - staple_overload_penalty
         )
+        coverage_metrics = {
+            key: round(float(coverage.get(key, 0.0)), 2)
+            for key in set(context.plan.coverage_targets) | set(coverage)
+        }
         metrics = {
             "primary_package": context.plan.primary_package,
             "secondary_packages": list(context.plan.secondary_packages),
@@ -2175,7 +2179,7 @@ class RandomDeckService:
             "protection_target": context.plan.protection_target,
             "land_count": context.plan.land_count,
             "curve_target": context.plan.curve_target,
-            "coverage": {key: round(value, 2) for key, value in coverage.items()},
+            "coverage": coverage_metrics,
             "package_counts": dict(package_counts),
             "support_counts": dict(support_counts),
             "shell_score": round(shell_score, 3),
