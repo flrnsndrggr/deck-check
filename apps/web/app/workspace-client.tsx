@@ -730,7 +730,7 @@ export default function HomePage() {
   const mobileBannerTitle = mobilePane === "controls" ? "Deck.Check" : mobilePane === "deck" ? deckBannerTitle : (selectedCard || viewBannerTitle);
   const commanderBannerArt = useMemo<BannerArt>(() => {
     const crops = commanderNames
-      .map((name) => cardArtCrop(name))
+      .map((name: string) => cardArtCrop(name))
       .filter((src): src is string => Boolean(src))
       .slice(0, 2);
     if (crops.length >= 2) {
