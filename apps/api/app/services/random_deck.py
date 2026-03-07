@@ -1848,8 +1848,10 @@ class RandomDeckService:
                     break
                 support_counts = self._support_counts(selected)
 
+        coverage = self._coverage_counts(selected)
+
         def interaction_total() -> float:
-            return coverage.get("role:interaction", 0.0)
+            return self._coverage_counts(selected).get("role:interaction", 0.0)
 
         while interaction_total() < 10.0:
             if len(selected) < spell_target:

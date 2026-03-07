@@ -1102,7 +1102,7 @@ def _allocate_attacks(
     opponent_table: VirtualTable,
     fingerprint,
     *,
-    hazard_model_active: bool,
+    hazard_model_active: bool = False,
 ) -> Dict[str, Any]:
     projected_life = list(state.opp_life)
     projected_poison = list(state.opp_poison)
@@ -1545,6 +1545,14 @@ def simulate_one(
 
             assert state.mana_state.floating >= 0, "negative floating mana"
             assert state.lands_played_this_turn <= 1 + state.extra_land_plays, "illegal extra land drop"
+
+            passive_extra_combats = sum(
+                max(0, int(round(float(getattr(perm.card, "extra_combat_factor", 1.0) or 1.0) - 1.0)))
+                for perm in state.battlefield
+                if float(getattr(perm.card, "extra_combat_factor", 1.0) or 1.0) > 1.0
+            )
+            if passive_extra_combats > 0:
+                state.extra_combats = max(state.extra_combats, passive_extra_combats)
 
             attackers = _choose_attackers(state)
             for attacker in attackers:
